@@ -1,15 +1,11 @@
 mod common;
 
-use covrs::parsers::Parser;
-
 #[test]
 fn ingest_and_query() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let xml = include_bytes!("fixtures/coverage.xml");
-    let data = covrs::parsers::cobertura::CoberturaParser
-        .parse(xml)
-        .unwrap();
+    let data = covrs::parsers::cobertura::parse(xml).unwrap();
 
     let report_id = covrs::db::insert_coverage(
         &mut conn,
@@ -36,5 +32,5 @@ fn ingest_and_query() {
     // Reports list
     let reports = covrs::db::list_reports(&conn).unwrap();
     assert_eq!(reports.len(), 1);
-    assert_eq!(reports[0].0, "test-cobertura");
+    assert_eq!(reports[0].name, "test-cobertura");
 }

@@ -3,7 +3,10 @@ use rusqlite::{params, Connection, Transaction};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::error::{CovrsError, Result};
+use anyhow::{bail, Result};
+
+use crate::model::{FileDiffCoverage, FileSummary, LineDetail, ReportInfo, ReportSummary};
+
 use crate::model::CoverageData;
 
 const SCHEMA: &str = include_str!("../schema.sql");
@@ -78,12 +81,11 @@ fn insert_coverage_tx(
         rusqlite::Error::SqliteFailure(ref err, _)
             if err.code == rusqlite::ErrorCode::ConstraintViolation =>
         {
-            CovrsError::Other(format!(
-                "Report '{}' already exists. Use --name to choose a different name, or delete it first.",
-                name
-            ))
+            anyhow::anyhow!(
+                "Report '{name}' already exists. Use --name to choose a different name, or delete it first."
+            )
         }
-        other => CovrsError::Sqlite(other),
+        other => anyhow::Error::from(other),
     })?;
     let report_id = tx.last_insert_rowid();
 
@@ -171,102 +173,21 @@ fn get_or_insert_source_file<'a>(
 
 // ── Query helpers ──────────────────────────────────────────────────────────
 
-/// Summary stats across all reports in the database.
-#[derive(Debug)]
-pub struct ReportSummary {
-    pub total_files: u64,
-    pub total_lines: u64,
-    pub covered_lines: u64,
-    pub total_branches: u64,
-    pub covered_branches: u64,
-    pub total_functions: u64,
-    pub covered_functions: u64,
-}
-
-impl ReportSummary {
-    pub fn line_rate(&self) -> f64 {
-        if self.total_lines == 0 {
-            return 0.0;
-        }
-        self.covered_lines as f64 / self.total_lines as f64
-    }
-
-    pub fn branch_rate(&self) -> f64 {
-        if self.total_branches == 0 {
-            return 0.0;
-        }
-        self.covered_branches as f64 / self.total_branches as f64
-    }
-
-    pub fn function_rate(&self) -> f64 {
-        if self.total_functions == 0 {
-            return 0.0;
-        }
-        self.covered_functions as f64 / self.total_functions as f64
-    }
-}
-
-/// Per-file summary row.
-#[derive(Debug)]
-pub struct FileSummary {
-    pub path: String,
-    pub total_lines: u64,
-    pub covered_lines: u64,
-    pub total_branches: u64,
-    pub covered_branches: u64,
-}
-
-impl FileSummary {
-    pub fn line_rate(&self) -> f64 {
-        if self.total_lines == 0 {
-            return 0.0;
-        }
-        self.covered_lines as f64 / self.total_lines as f64
-    }
-}
-
-/// Line-level detail for a source file.
-#[derive(Debug)]
-pub struct LineDetail {
-    pub line_number: u32,
-    pub hit_count: u64,
-}
-
-/// List all report names in the database.
-pub fn list_reports(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+/// List all reports in the database.
+pub fn list_reports(conn: &Connection) -> Result<Vec<ReportInfo>> {
     let mut stmt =
         conn.prepare("SELECT name, source_format, created_at FROM report ORDER BY created_at")?;
     let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
+        Ok(ReportInfo {
+            name: row.get(0)?,
+            format: row.get(1)?,
+            created_at: row.get(2)?,
+        })
     })?;
-    let mut result = Vec::new();
-    for row in rows {
-        result.push(row?);
-    }
-    Ok(result)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// Per-file patch coverage detail.
-#[derive(Debug)]
-pub struct FileDiffCoverage {
-    pub path: String,
-    /// Diff lines that are instrumentable and covered.
-    pub covered_lines: Vec<u32>,
-    /// Diff lines that are instrumentable and NOT covered.
-    pub missed_lines: Vec<u32>,
-}
-
-impl FileDiffCoverage {
-    pub fn total(&self) -> usize {
-        self.covered_lines.len() + self.missed_lines.len()
-    }
-}
-
-/// Compute per-file patch coverage detail for lines touched by a diff,
+/// Compute per-file diff coverage detail for lines touched by a diff,
 /// considering ALL reports in the database. A line is covered if any report
 /// has a hit_count > 0 for it.
 ///
@@ -275,10 +196,10 @@ impl FileDiffCoverage {
 pub fn diff_coverage_detail(
     conn: &Connection,
     diff_lines: &HashMap<String, Vec<u32>>,
-) -> Result<(Vec<FileDiffCoverage>, u64, u64)> {
+) -> Result<(Vec<FileDiffCoverage>, usize, usize)> {
     let mut results: Vec<FileDiffCoverage> = Vec::new();
-    let mut total_covered: u64 = 0;
-    let mut total_instrumentable: u64 = 0;
+    let mut total_covered: usize = 0;
+    let mut total_instrumentable: usize = 0;
 
     for (path, lines) in diff_lines {
         let file_id: i64 = match conn.query_row(
@@ -302,21 +223,21 @@ pub fn diff_coverage_detail(
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
                 "SELECT line_number, MAX(hit_count) FROM line_coverage \
-                 WHERE source_file_id = ?1 AND line_number IN ({}) \
-                 GROUP BY line_number",
-                placeholders
+                 WHERE source_file_id = ? AND line_number IN ({placeholders}) \
+                 GROUP BY line_number"
             );
             let mut stmt = conn.prepare(&sql)?;
 
-            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-            param_values.push(Box::new(file_id));
-            for &ln in chunk {
-                param_values.push(Box::new(ln));
-            }
-            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                param_values.iter().map(|p| p.as_ref()).collect();
+            let params: Vec<rusqlite::types::Value> =
+                std::iter::once(rusqlite::types::Value::Integer(file_id))
+                    .chain(
+                        chunk
+                            .iter()
+                            .map(|&ln| rusqlite::types::Value::Integer(i64::from(ln))),
+                    )
+                    .collect();
 
-            let rows = stmt.query_map(params_ref.as_slice(), |row| {
+            let rows = stmt.query_map(rusqlite::params_from_iter(&params), |row| {
                 Ok((row.get::<_, u32>(0)?, row.get::<_, u64>(1)?))
             })?;
 
@@ -337,8 +258,8 @@ pub fn diff_coverage_detail(
         covered.sort();
         missed.sort();
 
-        total_covered += covered.len() as u64;
-        total_instrumentable += (covered.len() + missed.len()) as u64;
+        total_covered += covered.len();
+        total_instrumentable += covered.len() + missed.len();
 
         results.push(FileDiffCoverage {
             path: path.clone(),
@@ -357,9 +278,7 @@ pub fn diff_coverage_detail(
 pub fn get_summary(conn: &Connection) -> Result<ReportSummary> {
     let count: u32 = conn.query_row("SELECT COUNT(*) FROM report", [], |row| row.get(0))?;
     if count == 0 {
-        return Err(CovrsError::Other(
-            "No reports in database. Run 'covrs ingest' first.".to_string(),
-        ));
+        bail!("No reports in database. Run 'covrs ingest' first.");
     }
 
     let (total_files, total_lines, covered_lines): (u64, u64, u64) = conn.query_row(
@@ -452,11 +371,7 @@ pub fn get_file_summaries(conn: &Connection) -> Result<Vec<FileSummary>> {
         })
     })?;
 
-    let mut result = Vec::new();
-    for row in rows {
-        result.push(row?);
-    }
-    Ok(result)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// Line-level detail for a source file across all reports (union semantics).
@@ -467,7 +382,7 @@ pub fn get_lines(conn: &Connection, source_path: &str) -> Result<Vec<LineDetail>
             params![source_path],
             |row| row.get(0),
         )
-        .map_err(|_| CovrsError::Other(format!("Source file not found: {}", source_path)))?;
+        .map_err(|_| anyhow::anyhow!("Source file not found: {source_path}"))?;
 
     let mut stmt = conn.prepare(
         "SELECT line_number, MAX(hit_count) as hit_count
@@ -484,11 +399,7 @@ pub fn get_lines(conn: &Connection, source_path: &str) -> Result<Vec<LineDetail>
         })
     })?;
 
-    let mut result = Vec::new();
-    for row in rows {
-        result.push(row?);
-    }
-    Ok(result)
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 /// Compute coverage for diff lines across all reports (union semantics).
@@ -496,26 +407,7 @@ pub fn get_lines(conn: &Connection, source_path: &str) -> Result<Vec<LineDetail>
 pub fn diff_coverage(
     conn: &Connection,
     diff_lines: &HashMap<String, Vec<u32>>,
-) -> Result<(u64, u64)> {
+) -> Result<(usize, usize)> {
     let (_, covered, total) = diff_coverage_detail(conn, diff_lines)?;
     Ok((covered, total))
-}
-
-/// Compute the overall line coverage rate across all reports in the database.
-/// A line is covered if any report has a hit_count > 0 for it.
-pub fn get_overall_line_rate(conn: &Connection) -> Result<Option<f64>> {
-    let (total, covered): (u64, u64) = conn.query_row(
-        "SELECT COUNT(*), SUM(CASE WHEN max_hits > 0 THEN 1 ELSE 0 END)
-         FROM (
-             SELECT MAX(hit_count) as max_hits
-             FROM line_coverage
-             GROUP BY source_file_id, line_number
-         )",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    if total == 0 {
-        return Ok(None);
-    }
-    Ok(Some(covered as f64 / total as f64))
 }

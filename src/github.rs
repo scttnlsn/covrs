@@ -1,9 +1,33 @@
-//! GitHub API helpers for posting patch-coverage comments on pull requests.
+//! GitHub API helpers for posting diff-coverage comments on pull requests.
 
 use anyhow::{bail, Context as _, Result};
 use serde::Deserialize;
 
 const COMMENT_MARKER: &str = "<!-- covrs-comment -->";
+
+/// Build a ureq request with standard GitHub API headers.
+fn github_request(method: &str, url: &str, token: &str) -> ureq::Request {
+    ureq::request(method, url)
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", "covrs")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+}
+
+/// Map a ureq response result into an anyhow error with context.
+fn check_response(
+    result: Result<ureq::Response, ureq::Error>,
+    action: &str,
+) -> Result<ureq::Response> {
+    match result {
+        Ok(resp) => Ok(resp),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("GitHub API error {action} (HTTP {code}): {body}");
+        }
+        Err(e) => bail!("Failed to {action}: {e}"),
+    }
+}
 
 /// Resolved GitHub Actions context, read from environment variables.
 pub struct Context {
@@ -61,12 +85,9 @@ fn pr_number_from_ref() -> Option<u64> {
 }
 
 fn fetch_pr_diff(token: &str, repo: &str, pr_number: u64) -> Result<String> {
-    let url = format!("https://api.github.com/repos/{}/pulls/{}", repo, pr_number);
-    let resp = ureq::get(&url)
-        .set("Authorization", &format!("Bearer {}", token))
+    let url = format!("https://api.github.com/repos/{repo}/pulls/{pr_number}");
+    let resp = github_request("GET", &url, token)
         .set("Accept", "application/vnd.github.v3.diff")
-        .set("User-Agent", "covrs")
-        .set("X-GitHub-Api-Version", "2022-11-28")
         .call()
         .context("Failed to fetch PR diff from GitHub")?;
     resp.into_string()
@@ -84,14 +105,9 @@ fn find_existing_comment(token: &str, repo: &str, pr_number: u64) -> Result<Opti
     let mut page = 1u32;
     loop {
         let url = format!(
-            "https://api.github.com/repos/{}/issues/{}/comments?per_page=100&page={}",
-            repo, pr_number, page
+            "https://api.github.com/repos/{repo}/issues/{pr_number}/comments?per_page=100&page={page}"
         );
-        let resp = ureq::get(&url)
-            .set("Authorization", &format!("Bearer {}", token))
-            .set("Accept", "application/vnd.github+json")
-            .set("User-Agent", "covrs")
-            .set("X-GitHub-Api-Version", "2022-11-28")
+        let resp = github_request("GET", &url, token)
             .call()
             .context("Failed to list PR comments")?;
 
@@ -111,58 +127,22 @@ fn find_existing_comment(token: &str, repo: &str, pr_number: u64) -> Result<Opti
     Ok(None)
 }
 
-/// Create or update the covrs patch-coverage comment on a PR.
+/// Create or update the covrs diff-coverage comment on a PR.
 fn post_comment(token: &str, repo: &str, pr_number: u64, body: &str) -> Result<()> {
-    let body_with_marker = format!("{}\n{}", COMMENT_MARKER, body);
+    let body_with_marker = format!("{COMMENT_MARKER}\n{body}");
 
     match find_existing_comment(token, repo, pr_number)? {
         Some(comment_id) => {
-            let url = format!(
-                "https://api.github.com/repos/{}/issues/comments/{}",
-                repo, comment_id
-            );
-            let resp = ureq::patch(&url)
-                .set("Authorization", &format!("Bearer {}", token))
-                .set("Accept", "application/vnd.github+json")
-                .set("User-Agent", "covrs")
-                .set("X-GitHub-Api-Version", "2022-11-28")
+            let url = format!("https://api.github.com/repos/{repo}/issues/comments/{comment_id}");
+            let resp = github_request("PATCH", &url, token)
                 .send_json(serde_json::json!({ "body": body_with_marker }));
-            match resp {
-                Ok(_) => {}
-                Err(ureq::Error::Status(code, resp)) => {
-                    let body = resp.into_string().unwrap_or_default();
-                    bail!(
-                        "GitHub API error updating comment (HTTP {}): {}",
-                        code,
-                        body
-                    );
-                }
-                Err(e) => bail!("Failed to update comment: {}", e),
-            }
+            check_response(resp, "updating comment")?;
         }
         None => {
-            let url = format!(
-                "https://api.github.com/repos/{}/issues/{}/comments",
-                repo, pr_number
-            );
-            let resp = ureq::post(&url)
-                .set("Authorization", &format!("Bearer {}", token))
-                .set("Accept", "application/vnd.github+json")
-                .set("User-Agent", "covrs")
-                .set("X-GitHub-Api-Version", "2022-11-28")
+            let url = format!("https://api.github.com/repos/{repo}/issues/{pr_number}/comments");
+            let resp = github_request("POST", &url, token)
                 .send_json(serde_json::json!({ "body": body_with_marker }));
-            match resp {
-                Ok(_) => {}
-                Err(ureq::Error::Status(code, resp)) => {
-                    let body = resp.into_string().unwrap_or_default();
-                    bail!(
-                        "GitHub API error creating comment (HTTP {}): {}",
-                        code,
-                        body
-                    );
-                }
-                Err(e) => bail!("Failed to create comment: {}", e),
-            }
+            check_response(resp, "creating comment")?;
         }
     }
 

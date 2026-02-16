@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::ValueEnum;
 use rusqlite::Connection;
 
+use crate::report::ReportFormatter;
 use crate::{db, diff, report};
 
 /// Output style for the `diff-coverage` command.
@@ -17,6 +18,16 @@ use crate::{db, diff, report};
 pub enum Style {
     Text,
     Markdown,
+}
+
+impl Style {
+    /// Get the formatter for this style.
+    pub fn formatter(&self) -> Box<dyn ReportFormatter> {
+        match self {
+            Style::Text => Box::new(report::TextFormatter),
+            Style::Markdown => Box::new(report::MarkdownFormatter),
+        }
+    }
 }
 
 pub fn cmd_ingest(
@@ -81,8 +92,8 @@ pub fn cmd_reports(conn: &Connection) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "{:<30} {:<15} CREATED", "NAME", "FORMAT").unwrap();
     writeln!(out, "{}", "-".repeat(70)).unwrap();
-    for (name, format, created) in &reports {
-        writeln!(out, "{:<30} {:<15} {}", name, format, created).unwrap();
+    for r in &reports {
+        writeln!(out, "{:<30} {:<15} {}", r.name, r.format, r.created_at).unwrap();
     }
     Ok(out)
 }
@@ -126,22 +137,21 @@ pub fn cmd_lines(conn: &Connection, source_file: &str, uncovered: bool) -> Resul
 
         if uncovered_lines.is_empty() {
             return Ok(format!(
-                "All instrumentable lines are covered in '{}'\n",
-                source_file
+                "All instrumentable lines are covered in '{source_file}'\n"
             ));
         }
 
         let mut out = String::new();
-        writeln!(out, "Uncovered lines in '{}':", source_file).unwrap();
+        writeln!(out, "Uncovered lines in '{source_file}':").unwrap();
         let uncovered_numbers: Vec<u32> = uncovered_lines.iter().map(|l| l.line_number).collect();
-        writeln!(out, "  {}", report::format_line_ranges(&uncovered_numbers)).unwrap();
-        writeln!(out, "  ({} lines)", uncovered_lines.len()).unwrap();
+        let ranges = report::format_line_ranges(&uncovered_numbers);
+        writeln!(out, "  {ranges}").unwrap();
+        let count = uncovered_lines.len();
+        writeln!(out, "  ({count} lines)").unwrap();
         Ok(out)
+    } else if lines.is_empty() {
+        Ok(format!("No coverage data for '{source_file}'\n"))
     } else {
-        if lines.is_empty() {
-            return Ok(format!("No coverage data for '{}'\n", source_file));
-        }
-
         let mut out = String::new();
         writeln!(out, "{:>6}  {:>10}", "LINE", "HITS").unwrap();
         writeln!(out, "{}", "-".repeat(18)).unwrap();
@@ -165,7 +175,7 @@ pub fn cmd_diff_coverage(
     diff_text: &str,
     path_prefix: Option<&str>,
     style: &Style,
-    sha: Option<String>,
+    sha: Option<&str>,
 ) -> Result<String> {
     let mut diff_lines = diff::parse_diff(diff_text);
 
@@ -174,13 +184,9 @@ pub fn cmd_diff_coverage(
     }
 
     let report = report::build_report(conn, &diff_lines, sha)?;
+    let formatter = style.formatter();
 
-    let output = match style {
-        Style::Text => report.format_text(),
-        Style::Markdown => report.format_markdown(),
-    };
-
-    Ok(output)
+    Ok(report.format(formatter.as_ref()))
 }
 
 #[cfg(test)]
@@ -371,7 +377,7 @@ diff --git a/src/main.rs b/src/main.rs
 
         let out = cmd_diff_coverage(&conn, diff_text, None, &Style::Text, None).unwrap();
 
-        assert!(out.contains("Patch coverage:"));
+        assert!(out.contains("Diff coverage:"));
         assert!(out.contains("50.0%"));
     }
 
@@ -391,16 +397,10 @@ diff --git a/src/main.rs b/src/main.rs
 +    let z = 3;
 ";
 
-        let out = cmd_diff_coverage(
-            &conn,
-            diff_text,
-            None,
-            &Style::Markdown,
-            Some("abc1234".to_string()),
-        )
-        .unwrap();
+        let out =
+            cmd_diff_coverage(&conn, diff_text, None, &Style::Markdown, Some("abc1234")).unwrap();
 
-        assert!(out.contains("## Patch Coverage:"));
+        assert!(out.contains("## Diff Coverage:"));
         assert!(out.contains("abc1234"));
     }
 
@@ -448,7 +448,7 @@ diff --git a/app.rs b/app.rs
 
         let out = cmd_diff_coverage(&conn, diff_text, Some("project"), &Style::Text, None).unwrap();
 
-        assert!(out.contains("Patch coverage:"));
+        assert!(out.contains("Diff coverage:"));
         assert!(out.contains("1/2"));
     }
 
@@ -469,6 +469,6 @@ diff --git a/app.rs b/app.rs
         // Verify data actually made it into the DB
         let reports = db::list_reports(&conn).unwrap();
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].0, "my-report");
+        assert_eq!(reports[0].name, "my-report");
     }
 }

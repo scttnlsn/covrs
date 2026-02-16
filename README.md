@@ -1,13 +1,13 @@
 # covrs
 
-Ingest multi-format code coverage reports into a unified SQLite store. Query and diff coverage data from a single database — no server required.
+Ingest multi-format code coverage reports into a unified SQLite store. Query and diff coverage data from a single database — no server required. Post coverage results as comments on GitHub pull requests with a single command or [reusable Action](#github-action).
 
 ## Why
 
 Coverage tools produce reports in different formats (LCOV, Cobertura, etc.) and each has its own tooling. **covrs** normalizes them all into one SQLite database so you can:
 
 - Ingest multiple reports — coverage is automatically unioned across all of them
-- Compute patch coverage against a git diff
+- Compute diff coverage against a git diff
 - Query coverage data with plain SQL if you need to
 
 ## Install
@@ -99,7 +99,7 @@ Uncovered lines in 'src/main.rs':
   (9 lines)
 ```
 
-### Patch coverage (diff coverage)
+### Diff coverage
 
 See what percentage of newly added lines are covered:
 
@@ -115,7 +115,7 @@ covrs diff-coverage --git-diff "HEAD~1" --path-prefix src
 ```
 
 ```
-Patch coverage: 78.9% (30/38 lines covered)
+Diff coverage: 78.9% (30/38 lines covered)
 
   src/foo.rs  8/12 (66.7%)  missed: 4, 7-9, 15
   src/bar.rs  2/3 (66.7%)   missed: 22
@@ -132,15 +132,15 @@ covrs diff-coverage --git-diff "main..HEAD" --style markdown
 
 ### GitHub PR comment
 
-Post (or update) a patch-coverage comment directly on a pull request by
+Post (or update) a diff-coverage comment directly on a pull request by
 adding `--comment`:
 
 ```
 covrs diff-coverage --style markdown --comment
 ```
 
-This fetches the PR diff via the GitHub API, computes patch coverage, and
-posts a comment showing the overall patch coverage percentage, a table of
+This fetches the PR diff via the GitHub API, computes diff coverage, and
+posts a comment showing the overall diff coverage percentage, a table of
 files with missed lines, and an expandable detail section with the exact
 line numbers. All required parameters are read from the standard GitHub
 Actions environment variables (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
@@ -149,7 +149,7 @@ Actions environment variables (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
 ## GitHub Action
 
 covrs is available as a reusable GitHub Action. It installs covrs,
-optionally ingests coverage files, and posts a patch-coverage comment on
+optionally ingests coverage files, and posts a diff-coverage comment on
 the pull request:
 
 ```yaml
@@ -190,7 +190,7 @@ jobs:
       # Run tests and generate coverage
       - run: cargo llvm-cov test --lcov --output-path coverage.lcov
 
-      # Ingest and post the patch-coverage comment
+      # Ingest and post the diff-coverage comment
       - uses: scttnlsn/covrs@v0
         with:
           coverage-files: coverage.lcov

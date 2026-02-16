@@ -1,5 +1,5 @@
-name: "covrs patch coverage"
-description: "Post a patch-coverage comment on a GitHub pull request using covrs"
+name: "covrs diff coverage"
+description: "Post a diff-coverage comment on a GitHub pull request using covrs"
 branding:
   icon: "check-circle"
   color: "green"

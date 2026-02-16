@@ -17,22 +17,52 @@
 ///   LH:<lines hit>
 ///   end_of_record
 use std::collections::HashMap;
+use std::path::Path;
 
-use crate::error::{CovrsError, Result};
+use anyhow::{Context, Result};
+
+use super::{CoverageParser, Format};
 use crate::model::*;
-use crate::parsers::Parser;
 
+/// LCOV format parser.
 pub struct LcovParser;
 
-impl Parser for LcovParser {
+impl CoverageParser for LcovParser {
+    fn format(&self) -> Format {
+        Format::Lcov
+    }
+
+    fn can_parse(&self, path: &Path, content: &[u8]) -> bool {
+        // Extension-based: .info or .lcov
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            let ext = ext.to_lowercase();
+            if ext == "info" || ext == "lcov" {
+                return true;
+            }
+        }
+
+        // Content-based: lines starting with SF: and DA:/FN:
+        let head_len = content.len().min(4096);
+        let head = String::from_utf8_lossy(&content[..head_len]);
+        let has_sf = head.lines().any(|l| l.starts_with("SF:"));
+        let has_da_or_fn = head
+            .lines()
+            .any(|l| l.starts_with("DA:") || l.starts_with("FN:"));
+        has_sf && has_da_or_fn
+    }
+
     fn parse(&self, input: &[u8]) -> Result<CoverageData> {
-        let text = std::str::from_utf8(input)
-            .map_err(|e| CovrsError::Parse(format!("Invalid UTF-8 in LCOV data: {}", e)))?;
-        parse_lcov(text)
+        parse(input)
     }
 }
 
-fn parse_lcov(text: &str) -> Result<CoverageData> {
+/// Parse LCOV format coverage data from raw bytes.
+pub fn parse(input: &[u8]) -> Result<CoverageData> {
+    let text = std::str::from_utf8(input).context("Invalid UTF-8 in LCOV data")?;
+    parse_inner(text)
+}
+
+fn parse_inner(text: &str) -> Result<CoverageData> {
     let mut data = CoverageData::new();
     let mut current_file: Option<FileCoverage> = None;
 
@@ -123,8 +153,6 @@ fn parse_lcov(text: &str) -> Result<CoverageData> {
             "BRDA" => {
                 // BRDA:<line>,<block>,<branch>,<taken>
                 // <taken> can be "-" meaning 0.
-                // We use (line, block, branch) as a composite key to produce
-                // unique, stable branch indices — preserving block semantics.
                 if let Some(file) = current_file.as_mut() {
                     let parts: Vec<&str> = value.splitn(4, ',').collect();
                     if parts.len() == 4 {
@@ -134,17 +162,13 @@ fn parse_lcov(text: &str) -> Result<CoverageData> {
                             } else {
                                 parts[3].parse::<u64>().unwrap_or(0)
                             };
-                            // Use a running counter per line to assign branch
-                            // indices. The (block, branch) pair from the BRDA
-                            // record determines ordering — each unique BRDA
-                            // record on a line gets the next index.
-                            let branch_index = branch_indices.entry(line_number).or_insert(0);
+                            let idx = branch_indices.entry(line_number).or_insert(0);
                             file.branches.push(BranchCoverage {
                                 line_number,
-                                branch_index: *branch_index,
+                                branch_index: *idx,
                                 hit_count,
                             });
-                            *branch_indices.get_mut(&line_number).unwrap() += 1;
+                            *idx += 1;
                         }
                     }
                 }
@@ -169,8 +193,7 @@ mod tests {
     #[test]
     fn test_parse_lcov() {
         let input = include_bytes!("../../tests/fixtures/sample.lcov");
-        let parser = LcovParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
 
         assert_eq!(data.files.len(), 2);
 
@@ -206,8 +229,7 @@ mod tests {
     #[test]
     fn test_parse_lcov_no_end_of_record() {
         let input = include_bytes!("../../tests/fixtures/lcov_no_end_of_record.lcov");
-        let parser = LcovParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
         assert_eq!(data.files.len(), 1);
         assert_eq!(data.files[0].lines.len(), 2);
     }
@@ -217,8 +239,7 @@ mod tests {
         // DA lines with negative counts (e.g., -1) should be skipped as
         // non-instrumentable.
         let input = include_bytes!("../../tests/fixtures/lcov_negative_counts.lcov");
-        let parser = LcovParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
 
         assert_eq!(data.files.len(), 1);
         let file = &data.files[0];
@@ -237,8 +258,7 @@ mod tests {
         // An LCOV file with only a test name and no records should produce
         // an empty CoverageData (no files).
         let input = include_bytes!("../../tests/fixtures/empty.lcov");
-        let parser = LcovParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
         assert_eq!(data.files.len(), 0);
     }
 }

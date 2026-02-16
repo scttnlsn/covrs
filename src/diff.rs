@@ -1,7 +1,96 @@
 /// Parse a unified diff to extract which lines were added in each file.
-/// This is used for computing "patch coverage" — what percentage of newly
+/// This is used for computing "diff coverage" — what percentage of newly
 /// added/modified lines are covered by tests.
+///
+/// Also provides a [`DiffSource`] trait that abstracts over different
+/// ways to obtain a diff (stdin, git, GitHub API).
 use std::collections::HashMap;
+use std::process::Command;
+
+use anyhow::{Context, Result};
+
+use crate::github;
+
+// ---------------------------------------------------------------------------
+// Diff sources
+// ---------------------------------------------------------------------------
+
+/// A source for obtaining a unified diff.
+pub trait DiffSource {
+    /// Fetch the diff text.
+    fn fetch_diff(&self) -> Result<String>;
+
+    /// Get the commit SHA, if available.
+    fn sha(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Diff from stdin.
+pub struct StdinDiff;
+
+impl DiffSource for StdinDiff {
+    fn fetch_diff(&self) -> Result<String> {
+        std::io::read_to_string(std::io::stdin()).context("Failed to read diff from stdin")
+    }
+}
+
+/// Diff from a git command (e.g., `git diff HEAD~1`).
+pub struct GitDiff {
+    /// Arguments to pass to `git diff`.
+    pub args: String,
+}
+
+impl DiffSource for GitDiff {
+    fn fetch_diff(&self) -> Result<String> {
+        let diff_args: Vec<&str> = self.args.split_whitespace().collect();
+        let output = Command::new("git")
+            .arg("diff")
+            .args(&diff_args)
+            .output()
+            .context("Failed to run git diff")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git diff failed: {stderr}");
+        }
+
+        String::from_utf8(output.stdout).context("git diff output not valid UTF-8")
+    }
+}
+
+/// Diff from a GitHub pull request.
+pub struct GitHubDiff {
+    /// The resolved GitHub context.
+    context: github::Context,
+}
+
+impl GitHubDiff {
+    /// Create from environment variables.
+    pub fn from_env() -> Result<Self> {
+        let context = github::Context::from_env()?;
+        Ok(Self { context })
+    }
+
+    /// Post a comment on the PR.
+    pub fn post_comment(&self, body: &str) -> Result<()> {
+        self.context.post_comment(body)
+    }
+}
+
+impl DiffSource for GitHubDiff {
+    fn fetch_diff(&self) -> Result<String> {
+        self.context.fetch_diff()
+    }
+
+    fn sha(&self) -> Option<&str> {
+        self.context.sha.as_deref()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diff parsing
+// ---------------------------------------------------------------------------
 
 /// Prepend a path prefix to all file paths in a diff result.
 pub fn apply_path_prefix(
@@ -11,7 +100,7 @@ pub fn apply_path_prefix(
     let prefix = prefix.trim_end_matches('/');
     diff_lines
         .into_iter()
-        .map(|(path, lines)| (format!("{}/{}", prefix, path), lines))
+        .map(|(path, lines)| (format!("{prefix}/{path}"), lines))
         .collect()
 }
 
@@ -80,6 +169,8 @@ fn parse_hunk_header(line: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Diff parsing tests -------------------------------------------------
 
     #[test]
     fn test_parse_hunk_header() {
