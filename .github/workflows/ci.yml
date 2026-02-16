@@ -41,16 +41,13 @@ jobs:
         run: cargo install cargo-fuzz
 
       - name: Fuzz lcov parser
-        run: cargo fuzz run fuzz_lcov -- -max_total_time=10
-        working-directory: tests/fuzz
+        run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_lcov -- -max_total_time=10
 
       - name: Fuzz cobertura parser
-        run: cargo fuzz run fuzz_cobertura -- -max_total_time=10
-        working-directory: tests/fuzz
+        run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_cobertura -- -max_total_time=10
 
       - name: Fuzz diff parser
-        run: cargo fuzz run fuzz_diff -- -max_total_time=10
-        working-directory: tests/fuzz
+        run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_diff -- -max_total_time=10
 
   coverage:
     if: github.event_name == 'pull_request'
