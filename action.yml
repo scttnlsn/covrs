@@ -14,6 +14,9 @@ inputs:
   path-prefix:
     description: "Path prefix to prepend to diff file paths for matching against coverage data"
     required: false
+  coverage-files:
+    description: "Coverage file(s) to ingest before computing diff coverage (space or newline separated)"
+    required: true
   version:
     description: "covrs version to install (e.g. '0.1.0'). Omit to install the latest."
     required: false
@@ -65,6 +68,15 @@ runs:
         curl -fsSL "$URL" | tar -xz -C "$INSTALL_DIR"
         chmod +x "$INSTALL_DIR/covrs"
         echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+
+    - name: Ingest coverage files
+      shell: bash
+      run: |
+        set -euo pipefail
+        for file in ${{ inputs.coverage-files }}; do
+          echo "Ingesting: $file"
+          covrs --db "${{ inputs.db }}" ingest "$file"
+        done
 
     - name: Post coverage comment
       shell: bash
