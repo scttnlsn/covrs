@@ -1,0 +1,17 @@
+[package]
+name = "covrs"
+version = "0.1.0"
+edition = "2021"
+description = "Code coverage ingestion and reporting"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+quick-xml = "0.31"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
