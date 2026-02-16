@@ -32,6 +32,10 @@ enum Commands {
         /// Name for this report (default: filename).
         #[arg(long)]
         name: Option<String>,
+
+        /// Overwrite existing report with the same name.
+        #[arg(long)]
+        overwrite: bool,
     },
 
     /// Show a summary of a report.
@@ -116,8 +120,8 @@ fn main() -> Result<()> {
     db::init_schema(&conn).context("Failed to initialize schema")?;
 
     match cli.command {
-        Commands::Ingest { file, format, name } => {
-            cmd_ingest(&mut conn, &file, format.as_deref(), name.as_deref())
+        Commands::Ingest { file, format, name, overwrite } => {
+            cmd_ingest(&mut conn, &file, format.as_deref(), name.as_deref(), overwrite)
         }
         Commands::Summary { report } => cmd_summary(&conn, report.as_deref()),
         Commands::Reports => cmd_reports(&conn),
@@ -156,8 +160,9 @@ fn cmd_ingest(
     file: &std::path::Path,
     format: Option<&str>,
     name: Option<&str>,
+    overwrite: bool,
 ) -> Result<()> {
-    let (report_id, detected_format, actual_name) = ingest::ingest(conn, file, format, name)?;
+    let (report_id, detected_format, actual_name) = ingest::ingest(conn, file, format, name, overwrite)?;
     println!(
         "Ingested {} as format '{}' → report id {} (name: '{}')",
         file.display(),

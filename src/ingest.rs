@@ -17,6 +17,7 @@ pub fn ingest(
     file_path: &Path,
     format_override: Option<&str>,
     report_name: Option<&str>,
+    overwrite: bool,
 ) -> Result<(i64, Format, String)> {
     let content = std::fs::read(file_path)?;
 
@@ -30,6 +31,14 @@ pub fn ingest(
     // Parse
     let data = parse_with_format(format, &content)?;
 
+    // Warn on empty coverage data
+    if data.files.is_empty() {
+        eprintln!(
+            "Warning: coverage file '{}' contains no source files",
+            file_path.display()
+        );
+    }
+
     // Generate report name if not provided
     let name = match report_name {
         Some(n) => n.to_string(),
@@ -39,6 +48,11 @@ pub fn ingest(
             .unwrap_or("unnamed")
             .to_string(),
     };
+
+    // If --overwrite is set, delete any existing report with the same name
+    if overwrite && db::report_exists(conn, &name)? {
+        db::delete_report(conn, &name)?;
+    }
 
     let source_file_str = file_path.to_str();
 

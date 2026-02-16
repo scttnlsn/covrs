@@ -98,16 +98,24 @@ fn parse_lcov(text: &str) -> Result<CoverageData> {
             }
             "DA" => {
                 // DA:<line_number>,<execution_count>[,<checksum>]
+                // Some instrumenters use negative counts (e.g., -1) to indicate
+                // non-instrumentable lines. We skip those entirely.
                 if let Some(file) = current_file.as_mut() {
                     let parts: Vec<&str> = value.splitn(3, ',').collect();
                     if parts.len() >= 2 {
-                        if let (Ok(line_number), Ok(hit_count)) =
-                            (parts[0].parse::<u32>(), parts[1].parse::<u64>())
-                        {
-                            file.lines.push(LineCoverage {
-                                line_number,
-                                hit_count,
-                            });
+                        if let Ok(line_number) = parts[0].parse::<u32>() {
+                            match parts[1].parse::<i64>() {
+                                Ok(count) if count >= 0 => {
+                                    file.lines.push(LineCoverage {
+                                        line_number,
+                                        hit_count: count as u64,
+                                    });
+                                }
+                                _ => {
+                                    // Negative count or parse failure — skip
+                                    // this line as non-instrumentable.
+                                }
+                            }
                         }
                     }
                 }
@@ -115,6 +123,8 @@ fn parse_lcov(text: &str) -> Result<CoverageData> {
             "BRDA" => {
                 // BRDA:<line>,<block>,<branch>,<taken>
                 // <taken> can be "-" meaning 0.
+                // We use (line, block, branch) as a composite key to produce
+                // unique, stable branch indices — preserving block semantics.
                 if let Some(file) = current_file.as_mut() {
                     let parts: Vec<&str> = value.splitn(4, ',').collect();
                     if parts.len() == 4 {
@@ -124,6 +134,10 @@ fn parse_lcov(text: &str) -> Result<CoverageData> {
                             } else {
                                 parts[3].parse::<u64>().unwrap_or(0)
                             };
+                            // Use a running counter per line to assign branch
+                            // indices. The (block, branch) pair from the BRDA
+                            // record determines ordering — each unique BRDA
+                            // record on a line gets the next index.
                             let branch_index =
                                 branch_indices.entry(line_number).or_insert(0);
                             file.branches.push(BranchCoverage {
@@ -197,5 +211,35 @@ mod tests {
         let data = parser.parse(input).unwrap();
         assert_eq!(data.files.len(), 1);
         assert_eq!(data.files[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_lcov_negative_counts() {
+        // DA lines with negative counts (e.g., -1) should be skipped as
+        // non-instrumentable.
+        let input = include_bytes!("../../tests/fixtures/lcov_negative_counts.lcov");
+        let parser = LcovParser;
+        let data = parser.parse(input).unwrap();
+
+        assert_eq!(data.files.len(), 1);
+        let file = &data.files[0];
+        // Line 2 has count=-1, should be skipped. Lines 1, 3, 4 remain.
+        assert_eq!(file.lines.len(), 3);
+        assert_eq!(file.lines[0].line_number, 1);
+        assert_eq!(file.lines[0].hit_count, 5);
+        assert_eq!(file.lines[1].line_number, 3);
+        assert_eq!(file.lines[1].hit_count, 0);
+        assert_eq!(file.lines[2].line_number, 4);
+        assert_eq!(file.lines[2].hit_count, 3);
+    }
+
+    #[test]
+    fn test_parse_lcov_empty() {
+        // An LCOV file with only a test name and no records should produce
+        // an empty CoverageData (no files).
+        let input = include_bytes!("../../tests/fixtures/empty.lcov");
+        let parser = LcovParser;
+        let data = parser.parse(input).unwrap();
+        assert_eq!(data.files.len(), 0);
     }
 }

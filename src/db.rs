@@ -20,6 +20,8 @@ pub fn open(path: &Path) -> Result<Connection> {
 }
 
 /// Ensure the schema is initialized. Safe to call on an already-initialized DB.
+/// Performs forward migrations when the on-disk schema version is older than
+/// `SCHEMA_VERSION`.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
 
@@ -40,11 +42,63 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             [],
             |row| row.get(0),
         )?;
-        if version != SCHEMA_VERSION {
+        if version == SCHEMA_VERSION {
+            return Ok(());
+        }
+        if version > SCHEMA_VERSION {
             return Err(CovrsError::Other(format!(
-                "Schema version mismatch: expected {}, found {}",
-                SCHEMA_VERSION, version
+                "Database schema version {} is newer than this binary supports ({}). \
+                 Please upgrade covrs.",
+                version, SCHEMA_VERSION
             )));
+        }
+        // Forward migration: apply each step from `version` to `SCHEMA_VERSION`.
+        migrate(conn, version)?;
+    }
+    Ok(())
+}
+
+/// Apply migrations from `from_version` up to (and including) `SCHEMA_VERSION`.
+/// Each migration step is a function that transforms the schema.
+///
+/// To add a new migration:
+///   1. Bump `SCHEMA_VERSION`.
+///   2. Add a new arm `N => { ... }` that migrates from version N to N+1.
+///   3. Update schema.sql to reflect the final state (new installs skip migrations).
+#[allow(unused_mut, unused_variables, clippy::never_loop)]
+fn migrate(conn: &Connection, from_version: u32) -> Result<()> {
+    let mut current = from_version;
+    while current < SCHEMA_VERSION {
+        eprintln!(
+            "Migrating database schema from version {} to {} ...",
+            current,
+            current + 1
+        );
+        #[allow(clippy::match_single_binding)]
+        match current {
+            // Example migration steps (add real ones as schema evolves):
+            // 3 => {
+            //     conn.execute_batch("ALTER TABLE report ADD COLUMN metadata TEXT;")?;
+            // }
+            _ => {
+                return Err(CovrsError::Other(format!(
+                    "No migration path from schema version {} to {}. \
+                     Consider deleting the database and re-ingesting.",
+                    current,
+                    current + 1
+                )));
+            }
+        }
+        // Note: when real migration arms are added above, they should not
+        // return early — execution will fall through to here to bump the
+        // version and continue.
+        #[allow(unreachable_code)]
+        {
+            current += 1;
+            conn.execute(
+                "UPDATE schema_version SET version = ?1",
+                params![current],
+            )?;
         }
     }
     Ok(())
@@ -461,6 +515,16 @@ pub fn list_reports(conn: &Connection) -> Result<Vec<(String, String, String)>> 
         result.push(row?);
     }
     Ok(result)
+}
+
+/// Check whether a report with the given name exists.
+pub fn report_exists(conn: &Connection, name: &str) -> Result<bool> {
+    let count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM report WHERE name = ?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 /// Return the name of the most recently created report, if any.

@@ -8,8 +8,11 @@ pub enum CovrsError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
-    #[error("XML parse error: {0}")]
-    Xml(#[from] quick_xml::Error),
+    #[error("XML parse error at position {position}: {source}")]
+    Xml {
+        source: quick_xml::Error,
+        position: usize,
+    },
 
     #[error("Parse error: {0}")]
     Parse(String),

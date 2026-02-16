@@ -71,7 +71,10 @@ fn parse_cobertura(input: &[u8]) -> Result<CoverageData> {
         let event = reader.read_event_into(&mut buf);
         let is_start_event = matches!(&event, Ok(Event::Start(_)));
         match event {
-            Err(e) => return Err(CovrsError::Xml(e)),
+            Err(e) => return Err(CovrsError::Xml {
+                position: reader.buffer_position(),
+                source: e,
+            }),
             Ok(Event::Eof) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let local_name = e.name();
@@ -359,5 +362,30 @@ mod tests {
         let data = parser.parse(input).unwrap();
         assert_eq!(data.files.len(), 1);
         assert_eq!(data.files[0].path, "src/f.rs");
+    }
+
+    #[test]
+    fn test_parse_cobertura_empty() {
+        // A valid Cobertura file with no classes should produce empty CoverageData.
+        let input = include_bytes!("../../tests/fixtures/empty_cobertura.xml");
+        let parser = CoberturaParser;
+        let data = parser.parse(input).unwrap();
+        assert_eq!(data.files.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_cobertura_malformed() {
+        // Malformed XML should produce a meaningful error with position info.
+        let input = include_bytes!("../../tests/fixtures/malformed_cobertura.xml");
+        let parser = CoberturaParser;
+        let result = parser.parse(input);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        // Error should mention position
+        assert!(
+            err_msg.contains("position"),
+            "Error should contain position info: {}",
+            err_msg
+        );
     }
 }
