@@ -1,6 +1,6 @@
 # covrs
 
-Ingest multi-format code coverage reports into a unified SQLite store. Query and diff coverage data from a single database — no server required.
+Ingest multi-format code coverage reports into a unified SQLite store. Query and diff coverage data from a single database — no server required. Post coverage results as comments on GitHub pull requests with a single command or [reusable Action](#github-action).
 
 ## Why
 
