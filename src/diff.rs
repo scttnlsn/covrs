@@ -3,6 +3,18 @@
 /// added/modified lines are covered by tests.
 use std::collections::HashMap;
 
+/// Prepend a path prefix to all file paths in a diff result.
+pub fn apply_path_prefix(
+    diff_lines: HashMap<String, Vec<u32>>,
+    prefix: &str,
+) -> HashMap<String, Vec<u32>> {
+    let prefix = prefix.trim_end_matches('/');
+    diff_lines
+        .into_iter()
+        .map(|(path, lines)| (format!("{}/{}", prefix, path), lines))
+        .collect()
+}
+
 /// Parse a unified diff (e.g., `git diff`) and return a map of
 /// file path -> list of added line numbers (in the new file).
 pub fn parse_diff(diff_text: &str) -> HashMap<String, Vec<u32>> {

@@ -20,9 +20,6 @@ pub enum CovrsError {
     #[error("Unknown coverage format")]
     UnknownFormat,
 
-    #[error("Report not found: {0}")]
-    ReportNotFound(String),
-
     #[error("{0}")]
     Other(String),
 }

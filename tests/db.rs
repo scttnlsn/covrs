@@ -4,35 +4,14 @@ use covrs::model::{CoverageData, FileCoverage, FunctionCoverage, LineCoverage};
 use covrs::parsers::Parser;
 
 #[test]
-fn delete_report() {
-    let (mut conn, _dir, _) = common::setup_db();
-
-    let lcov = b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
-    covrs::db::insert_coverage(&mut conn, "to-delete", "lcov", None, &data).unwrap();
-
-    assert_eq!(covrs::db::list_reports(&conn).unwrap().len(), 1);
-    covrs::db::delete_report(&mut conn, "to-delete").unwrap();
-    assert_eq!(covrs::db::list_reports(&conn).unwrap().len(), 0);
-}
-
-#[test]
-fn delete_nonexistent_report_fails() {
-    let (mut conn, _dir, _) = common::setup_db();
-
-    let result = covrs::db::delete_report(&mut conn, "does-not-exist");
-    assert!(result.is_err());
-}
-
-#[test]
 fn duplicate_report_name_fails() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let lcov = b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n";
     let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
 
-    covrs::db::insert_coverage(&mut conn, "dupe", "lcov", None, &data).unwrap();
-    let result = covrs::db::insert_coverage(&mut conn, "dupe", "lcov", None, &data);
+    covrs::db::insert_coverage(&mut conn, "dupe", "lcov", None, &data, false).unwrap();
+    let result = covrs::db::insert_coverage(&mut conn, "dupe", "lcov", None, &data, false);
     assert!(result.is_err());
 }
 
@@ -65,33 +44,24 @@ fn function_coverage_null_start_line_dedup() {
     });
     data.files.push(file);
 
-    covrs::db::insert_coverage(&mut conn, "test-fn", "lcov", None, &data).unwrap();
+    covrs::db::insert_coverage(&mut conn, "test-fn", "lcov", None, &data, false).unwrap();
 
-    let summary = covrs::db::get_summary(&conn, "test-fn").unwrap();
+    let summary = covrs::db::get_summary(&conn).unwrap();
     // Both functions should be stored (different start_lines)
     assert_eq!(summary.total_functions, 2);
     assert_eq!(summary.covered_functions, 2);
 }
 
 #[test]
-fn get_summary_nonexistent_report_fails() {
+fn get_summary_empty_db_fails() {
     let (conn, _dir, _) = common::setup_db();
 
-    let result = covrs::db::get_summary(&conn, "nope");
+    let result = covrs::db::get_summary(&conn);
     assert!(result.is_err());
-}
-
-#[test]
-fn latest_report_name() {
-    let (mut conn, _dir, _) = common::setup_db();
-
-    assert!(covrs::db::get_latest_report_name(&conn).unwrap().is_none());
-
-    let lcov = b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
-    covrs::db::insert_coverage(&mut conn, "first", "lcov", None, &data).unwrap();
-    covrs::db::insert_coverage(&mut conn, "second", "lcov", None, &data).unwrap();
-
-    let latest = covrs::db::get_latest_report_name(&conn).unwrap().unwrap();
-    assert_eq!(latest, "second");
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("No reports"),
+        "Expected helpful error message, got: {}",
+        err_msg
+    );
 }

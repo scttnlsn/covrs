@@ -17,21 +17,20 @@ fn ingest_and_query() {
         "cobertura",
         Some("coverage.xml"),
         &data,
+        false,
     )
     .unwrap();
     assert!(report_id > 0);
 
     // Summary
-    let summary = covrs::db::get_summary(&conn, "test-cobertura").unwrap();
-    assert_eq!(summary.report_name, "test-cobertura");
-    assert_eq!(summary.source_format, "cobertura");
+    let summary = covrs::db::get_summary(&conn).unwrap();
     assert!(summary.total_files > 0);
     assert!(summary.total_lines > 0);
     assert!(summary.covered_lines > 0);
     assert!(summary.covered_lines <= summary.total_lines);
 
     // File summaries
-    let files = covrs::db::get_file_summaries(&conn, "test-cobertura").unwrap();
+    let files = covrs::db::get_file_summaries(&conn).unwrap();
     assert!(!files.is_empty());
 
     // Reports list

@@ -1,7 +1,3 @@
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS report (
     id            INTEGER PRIMARY KEY,
     name          TEXT NOT NULL,
@@ -54,8 +50,14 @@ CREATE TABLE IF NOT EXISTS function_coverage (
 CREATE INDEX IF NOT EXISTS idx_line_coverage_report
     ON line_coverage(report_id);
 
+CREATE INDEX IF NOT EXISTS idx_line_coverage_source
+    ON line_coverage(source_file_id, line_number);
+
 CREATE INDEX IF NOT EXISTS idx_branch_coverage_report
     ON branch_coverage(report_id);
+
+CREATE INDEX IF NOT EXISTS idx_branch_coverage_source
+    ON branch_coverage(source_file_id);
 
 CREATE INDEX IF NOT EXISTS idx_function_coverage_report
     ON function_coverage(report_id);

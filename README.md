@@ -1,13 +1,12 @@
 # covrs
 
-Ingest multi-format code coverage reports into a unified SQLite store. Query, compare, merge, and diff coverage data from a single database — no server required.
+Ingest multi-format code coverage reports into a unified SQLite store. Query and diff coverage data from a single database — no server required.
 
 ## Why
 
 Coverage tools produce reports in different formats (LCOV, Cobertura, etc.) and each has its own tooling. **covrs** normalizes them all into one SQLite database so you can:
 
-- Store multiple reports side by side and compare them
-- Merge coverage from parallel test runs
+- Ingest multiple reports — coverage is automatically unioned across all of them
 - Compute patch coverage against a git diff
 - Query coverage data with plain SQL if you need to
 
@@ -43,7 +42,9 @@ covrs ingest coverage.info
 covrs ingest coverage.xml --format cobertura --name my-report
 ```
 
-The format is auto-detected from the file extension and content. Use `--name` to assign a human-readable report name (defaults to the filename).
+The format is auto-detected from the file extension and content. Use `--name` to assign a human-readable report name (defaults to the filename). Use `--overwrite` to replace an existing report with the same name.
+
+Ingesting multiple files builds up a combined view — all queries automatically union coverage across every report in the database. A line is considered covered if *any* report has a hit for it.
 
 ### List reports
 
@@ -61,63 +62,41 @@ my-report                      cobertura       2025-01-15T11:00:00+00:00
 ### View a summary
 
 ```
-covrs summary --report my-report
+covrs summary
 ```
 
 ```
-Report:     my-report
-Format:     cobertura
-Created:    2025-01-15T11:00:00+00:00
 Files:      42
 Lines:      1250/1800 (69.4%)
 Branches:   300/500 (60.0%)
 Functions:  85/100 (85.0%)
 ```
 
-If `--report` is omitted, the most recent report is used.
-
 ### Per-file breakdown
 
 ```
-covrs files --report my-report
+covrs files
 covrs files --sort-by-coverage       # worst-covered files first
 ```
 
 ### Line-level detail
 
 ```
-covrs lines src/main.rs --report my-report
+covrs lines src/main.rs
 ```
 
 Shows every instrumentable line with its hit count and a ✓/✗ marker.
 
-### Show uncovered lines
+Use `--uncovered` to show only uncovered lines as compact ranges:
 
 ```
-covrs uncovered src/main.rs
+covrs lines src/main.rs --uncovered
 ```
-
-Outputs compact line ranges:
 
 ```
 Uncovered lines in 'src/main.rs':
   15-18, 42, 55-60
   (9 lines)
-```
-
-### Merge reports
-
-Combine coverage from multiple test runs by summing hit counts:
-
-```
-covrs merge unit-tests --into combined
-covrs merge integration-tests --into combined
-```
-
-### Delete a report
-
-```
-covrs delete old-report
 ```
 
 ### Patch coverage (diff coverage)
@@ -136,10 +115,83 @@ covrs diff-coverage --git-diff "HEAD~1" --path-prefix src
 ```
 
 ```
-Patch coverage for report 'coverage.info':
-  Diff adds 45 lines across 3 files
-  Of those, 38 are instrumentable, 30 are covered
-  Patch coverage: 78.9%
+Patch coverage: 78.9% (30/38 lines covered)
+
+  src/foo.rs  8/12 (66.7%)  missed: 4, 7-9, 15
+  src/bar.rs  2/3 (66.7%)   missed: 22
+
+Full repo line coverage: 85.0%
+```
+
+Use `--style markdown` to get the output as markdown (e.g. for piping
+into other tools):
+
+```
+covrs diff-coverage --git-diff "main..HEAD" --style markdown
+```
+
+### GitHub PR comment
+
+Post (or update) a patch-coverage comment directly on a pull request by
+adding `--comment`:
+
+```
+covrs diff-coverage --style markdown --comment
+```
+
+This fetches the PR diff via the GitHub API, computes patch coverage, and
+posts a comment showing the overall patch coverage percentage, a table of
+files with missed lines, and an expandable detail section with the exact
+line numbers. All required parameters are read from the standard GitHub
+Actions environment variables (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
+`GITHUB_REF`, `GITHUB_SHA`).
+
+## GitHub Action
+
+covrs is available as a reusable GitHub Action. Run your tests and ingest
+coverage first, then add the action to post the patch-coverage comment:
+
+```yaml
+- name: Patch coverage
+  uses: scttnlsn/covrs@v1
+```
+
+#### Inputs
+
+| Input         | Description                                      | Default     |
+|---------------|--------------------------------------------------|-------------|
+| `token`       | GitHub token for API access                      | `${{ github.token }}` |
+| `db`          | Path to the covrs SQLite database                | `.covrs.db` |
+| `path-prefix` | Prefix to prepend to diff paths for matching     |             |
+| `version`     | covrs version to install (e.g. `0.1.0`)          | latest release |
+
+#### Full example
+
+```yaml
+name: CI
+on: pull_request
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      # Run tests and generate coverage
+      - run: cargo llvm-cov test --lcov --output-path coverage.lcov
+
+      # Install covrs and ingest
+      - run: cargo install covrs
+      - run: covrs ingest coverage.lcov
+
+      # Post the patch-coverage comment
+      - uses: scttnlsn/covrs@v1
 ```
 
 ## Global Options
@@ -173,10 +225,7 @@ sqlite3 .covrs.db "
          SUM(CASE WHEN lc.hit_count > 0 THEN 1 ELSE 0 END) as covered
   FROM line_coverage lc
   JOIN source_file sf ON sf.id = lc.source_file_id
-  JOIN report r ON r.id = lc.report_id
-  WHERE r.name = 'my-report'
   GROUP BY sf.path
   ORDER BY covered * 1.0 / total
 "
 ```
-

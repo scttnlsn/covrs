@@ -66,49 +66,45 @@ $COVRS --db "$DB" ingest "$LCOV_FILE" --name "selfcov-lcov" --overwrite
 step "Ingesting Cobertura report"
 $COVRS --db "$DB" ingest "$COBERTURA_FILE" --name "selfcov-cobertura" --overwrite
 
-# ── Report ──────────────────────────────────────────────────────────────────
+# ── Show uncovered lines for all files ──────────────────────────────────────
 
-header "Reports in database"
-$COVRS --db "$DB" reports
-
-header "Summary: LCOV report"
-$COVRS --db "$DB" summary --report selfcov-lcov
-
-header "Summary: Cobertura report"
-$COVRS --db "$DB" summary --report selfcov-cobertura
-
-header "Per-file coverage (LCOV, sorted by coverage)"
-$COVRS --db "$DB" files --report selfcov-lcov --sort-by-coverage
-
-# ── Merge ───────────────────────────────────────────────────────────────────
-
-header "Merging both reports"
-$COVRS --db "$DB" merge selfcov-lcov --into selfcov-merged
-$COVRS --db "$DB" merge selfcov-cobertura --into selfcov-merged
-$COVRS --db "$DB" summary --report selfcov-merged
-
-# ── Diff coverage ───────────────────────────────────────────────────────────
-
-header "Diff coverage (HEAD vs HEAD~1)"
-# This may fail if there's no git history, so don't bail
-$COVRS --db "$DB" diff-coverage --report selfcov-lcov --git-diff "HEAD~1" || \
-    echo "  (skipped — not enough git history or no changes)"
-
-# ── Pick a source file and show uncovered lines ────────────────────────────
-
-header "Uncovered lines sample"
-# Grab the first covrs source file from the LCOV report
-SAMPLE_FILE=$($COVRS --db "$DB" files --report selfcov-lcov \
+header "Line by line coverage"
+FILES=$($COVRS --db "$DB" files \
     | grep '\.rs' \
-    | head -1 \
     | awk '{print $1}')
 
-if [ -n "$SAMPLE_FILE" ]; then
-    step "Uncovered lines in: $SAMPLE_FILE"
-    $COVRS --db "$DB" uncovered "$SAMPLE_FILE" --report selfcov-lcov
+if [ -n "$FILES" ]; then
+    while IFS= read -r FILE; do
+        OUTPUT=$($COVRS --db "$DB" lines "$FILE" 2>&1)
+        if [ -n "$OUTPUT" ]; then
+            step "Uncovered lines in: $FILE"
+            echo "$OUTPUT"
+        fi
+    done <<< "$FILES"
 else
     echo "  (no source files found)"
 fi
+
+# ── Report ──────────────────────────────────────────────────────────────────
+
+header "Reports"
+$COVRS --db "$DB" reports
+
+header "Summary"
+$COVRS --db "$DB" summary
+
+header "Per-file coverage"
+$COVRS --db "$DB" files  --sort-by-coverage
+
+# ── Diff coverage ───────────────────────────────────────────────────────────
+
+header "Diff coverage (text)"
+# This may fail if there's no git history, so don't bail
+$COVRS --db "$DB" diff-coverage --git-diff "HEAD~1" --path-prefix "$PROJECT_DIR" || \
+    echo "  (skipped — not enough git history or no changes)"
+header "Diff coverage (markdown)"
+$COVRS --db "$DB" diff-coverage --git-diff "HEAD~1" --path-prefix "$PROJECT_DIR" --style markdown || \
+    echo "  (skipped — not enough git history or no changes)"
 
 # ── Summary ─────────────────────────────────────────────────────────────────
 

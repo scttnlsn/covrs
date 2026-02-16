@@ -49,14 +49,16 @@ pub fn ingest(
             .to_string(),
     };
 
-    // If --overwrite is set, delete any existing report with the same name
-    if overwrite && db::report_exists(conn, &name)? {
-        db::delete_report(conn, &name)?;
-    }
-
     let source_file_str = file_path.to_str();
 
-    let report_id = db::insert_coverage(conn, &name, format.as_str(), source_file_str, &data)?;
+    let report_id = db::insert_coverage(
+        conn,
+        &name,
+        format.as_str(),
+        source_file_str,
+        &data,
+        overwrite,
+    )?;
 
     Ok((report_id, format, name))
 }

@@ -1,0 +1,84 @@
+name: "covrs patch coverage"
+description: "Post a patch-coverage comment on a GitHub pull request using covrs"
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  token:
+    description: "GitHub token for API access"
+    default: ${{ github.token }}
+  db:
+    description: "Path to the covrs SQLite database"
+    default: ".covrs.db"
+  path-prefix:
+    description: "Path prefix to prepend to diff file paths for matching against coverage data"
+    required: false
+  version:
+    description: "covrs version to install (e.g. '0.1.0'). Omit to install the latest."
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install covrs
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Resolve version
+        VERSION="${{ inputs.version }}"
+        if [ -z "$VERSION" ]; then
+          VERSION=$(
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/scttnlsn/covrs/releases/latest" \
+            | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/'
+          )
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not determine latest covrs version"
+            exit 1
+          fi
+        fi
+
+        # Resolve platform
+        OS="$(uname -s)"
+        ARCH="$(uname -m)"
+        case "${OS}-${ARCH}" in
+          Linux-x86_64)   TARGET="x86_64-unknown-linux-gnu"   ;;
+          Linux-aarch64)  TARGET="aarch64-unknown-linux-gnu"  ;;
+          Darwin-x86_64)  TARGET="x86_64-apple-darwin"        ;;
+          Darwin-arm64)   TARGET="aarch64-apple-darwin"       ;;
+          *)
+            echo "::error::Unsupported platform: ${OS}-${ARCH}"
+            exit 1
+            ;;
+        esac
+
+        # Download prebuilt binary
+        URL="https://github.com/scttnlsn/covrs/releases/download/v${VERSION}/covrs-${TARGET}.tar.gz"
+        INSTALL_DIR="${RUNNER_TEMP:-/tmp}/covrs-bin"
+        mkdir -p "$INSTALL_DIR"
+
+        echo "Downloading covrs v${VERSION} for ${TARGET}"
+        curl -fsSL "$URL" | tar -xz -C "$INSTALL_DIR"
+        chmod +x "$INSTALL_DIR/covrs"
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+
+    - name: Post coverage comment
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        ARGS=(--db "${{ inputs.db }}")
+        ARGS+=(diff-coverage --style markdown --comment)
+
+        if [ -n "${{ inputs.path-prefix }}" ]; then
+          ARGS+=(--path-prefix "${{ inputs.path-prefix }}")
+        fi
+
+        echo "Running: covrs ${ARGS[*]}"
+        covrs "${ARGS[@]}"
