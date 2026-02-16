@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use crate::db::FileDiffCoverage;
+use crate::model::{rate, FileDiffCoverage};
 
-/// Aggregated diff coverage data, ready to be formatted as text or markdown.
+/// Aggregated diff coverage data, ready to be formatted.
 pub struct DiffCoverageReport {
     /// Number of added lines per file from the diff.
     pub diff_files: usize,
@@ -14,44 +14,77 @@ pub struct DiffCoverageReport {
     /// Per-file coverage detail (only files with at least one instrumentable line).
     pub files: Vec<FileDiffCoverage>,
     /// Total instrumentable diff lines that are covered.
-    pub total_covered: u64,
+    pub total_covered: usize,
     /// Total instrumentable diff lines.
-    pub total_instrumentable: u64,
-    /// Overall repo line coverage rate (if available).
-    pub repo_line_rate: Option<f64>,
+    pub total_instrumentable: usize,
+    /// Overall project line coverage rate (if available).
+    pub total_rate: Option<f64>,
     /// Commit SHA to display.
     pub sha: Option<String>,
 }
 
 impl DiffCoverageReport {
+    /// Format using a specific formatter.
+    #[must_use]
+    pub fn format(&self, formatter: &dyn ReportFormatter) -> String {
+        formatter.format(self)
+    }
+
     /// Format as plain text.
+    #[must_use]
     pub fn format_text(&self) -> String {
+        self.format(&TextFormatter)
+    }
+
+    /// Format as markdown.
+    #[must_use]
+    pub fn format_markdown(&self) -> String {
+        self.format(&MarkdownFormatter)
+    }
+}
+
+/// Trait for formatting diff coverage reports.
+pub trait ReportFormatter {
+    /// Format the report to a string.
+    fn format(&self, report: &DiffCoverageReport) -> String;
+}
+
+/// Plain text formatter.
+pub struct TextFormatter;
+
+impl ReportFormatter for TextFormatter {
+    fn format(&self, report: &DiffCoverageReport) -> String {
         let mut out = String::new();
 
-        if self.diff_files == 0 {
+        if report.diff_files == 0 {
             out.push_str("No added lines found in diff.\n");
             return out;
         }
 
-        if self.total_instrumentable == 0 {
+        if report.total_instrumentable == 0 {
+            let lines = report.diff_lines;
+            let files = report.diff_files;
             writeln!(
                 out,
-                "{} lines added across {} files — none are instrumentable.",
-                self.diff_lines, self.diff_files
+                "{lines} lines added across {files} files — none are instrumentable."
             )
             .unwrap();
             return out;
         }
 
-        let rate = self.total_covered as f64 / self.total_instrumentable as f64 * 100.0;
+        let pct = rate(
+            report.total_covered as u64,
+            report.total_instrumentable as u64,
+        ) * 100.0;
+        let covered = report.total_covered;
+        let total = report.total_instrumentable;
         writeln!(
             out,
-            "Patch coverage: {:.1}% ({}/{} lines covered)",
-            rate, self.total_covered, self.total_instrumentable
+            "Diff coverage: {pct:.1}% ({covered}/{total} lines covered)"
         )
         .unwrap();
 
-        let files_with_misses: Vec<_> = self
+        let files_with_misses: Vec<_> = report
             .files
             .iter()
             .filter(|f| !f.missed_lines.is_empty())
@@ -61,101 +94,84 @@ impl DiffCoverageReport {
             for f in &files_with_misses {
                 let file_total = f.total();
                 let file_covered = f.covered_lines.len();
-                let file_rate = if file_total > 0 {
-                    file_covered as f64 / file_total as f64 * 100.0
-                } else {
-                    100.0
-                };
+                let file_rate = f.rate() * 100.0;
+                let path = &f.path;
+                let missed = format_line_ranges(&f.missed_lines);
                 writeln!(
                     out,
-                    "  {}  {}/{} ({:.1}%)  missed: {}",
-                    f.path,
-                    file_covered,
-                    file_total,
-                    file_rate,
-                    format_line_ranges(&f.missed_lines),
+                    "  {path}  {file_covered}/{file_total} ({file_rate:.1}%)  missed: {missed}",
                 )
                 .unwrap();
             }
         }
 
-        if let Some(rate) = self.repo_line_rate {
+        if let Some(rate) = report.total_rate {
             out.push('\n');
-            writeln!(out, "Full project coverage: {:.1}%", rate * 100.0).unwrap();
+            let pct = rate * 100.0;
+            writeln!(out, "Full project coverage: {pct:.1}%").unwrap();
         }
 
         out
     }
+}
 
-    /// Format as markdown.
-    pub fn format_markdown(&self) -> String {
+/// Markdown formatter.
+pub struct MarkdownFormatter;
+
+impl ReportFormatter for MarkdownFormatter {
+    fn format(&self, report: &DiffCoverageReport) -> String {
         let mut md = String::new();
 
-        let patch_rate = if self.total_instrumentable > 0 {
-            self.total_covered as f64 / self.total_instrumentable as f64 * 100.0
-        } else {
-            100.0
-        };
+        let diff_rate = rate(
+            report.total_covered as u64,
+            report.total_instrumentable as u64,
+        ) * 100.0;
 
-        md.push_str(&format!("## Patch Coverage: {:.1}%\n\n", patch_rate));
+        writeln!(md, "## Diff Coverage: {diff_rate:.1}%\n").unwrap();
 
-        md.push_str(&format!(
-            "**{}** of **{}** patch lines covered",
-            self.total_covered, self.total_instrumentable
-        ));
-        if let Some(ref sha) = self.sha {
+        let covered = report.total_covered;
+        let total = report.total_instrumentable;
+        write!(md, "**{covered}** of **{total}** diff lines covered").unwrap();
+        if let Some(ref sha) = report.sha {
             let short_sha = if sha.len() > 7 { &sha[..7] } else { sha };
-            md.push_str(&format!(" ({})", short_sha));
+            write!(md, " ({short_sha})").unwrap();
         }
         md.push('\n');
 
-        let files_with_misses: Vec<&FileDiffCoverage> = self
+        let files_with_misses: Vec<&FileDiffCoverage> = report
             .files
             .iter()
             .filter(|f| !f.missed_lines.is_empty())
             .collect();
 
         if files_with_misses.is_empty() {
-            md.push_str("\nAll patch lines are covered! 🎉\n");
+            md.push_str("\nAll diff lines are covered! 🎉\n");
         } else {
-            md.push_str("\n| File | Missed | Patch | \n");
+            md.push_str("\n| File | Missed | Diff | \n");
             md.push_str("|:-----|-------:|------:|\n");
 
             for f in &files_with_misses {
-                let file_total = f.total();
-                let file_covered = f.covered_lines.len();
-                let file_rate = if file_total > 0 {
-                    file_covered as f64 / file_total as f64 * 100.0
-                } else {
-                    100.0
-                };
-                md.push_str(&format!(
-                    "| `{}` | {} | {:.0}% |\n",
-                    f.path,
-                    f.missed_lines.len(),
-                    file_rate,
-                ));
+                let file_rate = f.rate() * 100.0;
+                let path = &f.path;
+                let missed_count = f.missed_lines.len();
+                writeln!(md, "| `{path}` | {missed_count} | {file_rate:.0}% |").unwrap();
             }
 
             md.push_str("\n<details>\n<summary>Missed lines</summary>\n\n");
 
             for f in &files_with_misses {
-                md.push_str(&format!(
-                    "**`{}`**: {}\n\n",
-                    f.path,
-                    format_line_ranges(&f.missed_lines),
-                ));
+                let path = &f.path;
+                let ranges = format_line_ranges(&f.missed_lines);
+                writeln!(md, "**`{path}`**: {ranges}\n").unwrap();
             }
 
             md.push_str("</details>\n");
         }
 
         md.push('\n');
-        if let Some(rate) = self.repo_line_rate {
-            md.push_str(&format!(
-                "<sub>Full project coverage: **{:.1}%**</sub>\n",
-                rate * 100.0
-            ));
+        if let Some(rate) = report.total_rate {
+            let pct = rate * 100.0;
+            writeln!(md, "<sub>Full project coverage: **{pct:.1}%**</sub>").unwrap();
         }
         md.push_str("<sub>[covrs](https://github.com/scttnlsn/covrs)</sub>\n");
 
@@ -167,7 +183,7 @@ impl DiffCoverageReport {
 pub fn build_report(
     conn: &rusqlite::Connection,
     diff_lines: &HashMap<String, Vec<u32>>,
-    sha: Option<String>,
+    sha: Option<&str>,
 ) -> anyhow::Result<DiffCoverageReport> {
     let diff_files = diff_lines.len();
     let diff_line_count: usize = diff_lines.values().map(|v| v.len()).sum();
@@ -178,7 +194,14 @@ pub fn build_report(
         crate::db::diff_coverage_detail(conn, diff_lines)?
     };
 
-    let repo_line_rate = crate::db::get_overall_line_rate(conn)?;
+    let total_rate = match crate::db::get_summary(conn) {
+        Ok(s) if s.total_lines > 0 => Some(s.line_rate()),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("Warning: could not compute project coverage: {e}");
+            None
+        }
+    };
 
     Ok(DiffCoverageReport {
         diff_files,
@@ -186,12 +209,13 @@ pub fn build_report(
         files,
         total_covered,
         total_instrumentable,
-        repo_line_rate,
-        sha,
+        total_rate,
+        sha: sha.map(|s| s.to_owned()),
     })
 }
 
 /// Format line numbers into compact range notation, e.g. "1, 3-5, 8".
+#[must_use]
 pub fn format_line_ranges(lines: &[u32]) -> String {
     if lines.is_empty() {
         return String::new();
@@ -206,9 +230,9 @@ pub fn format_line_ranges(lines: &[u32]) -> String {
             end = line;
         } else {
             if start == end {
-                ranges.push(format!("{}", start));
+                ranges.push(start.to_string());
             } else {
-                ranges.push(format!("{}-{}", start, end));
+                ranges.push(format!("{start}-{end}"));
             }
             start = line;
             end = line;
@@ -216,9 +240,9 @@ pub fn format_line_ranges(lines: &[u32]) -> String {
     }
 
     if start == end {
-        ranges.push(format!("{}", start));
+        ranges.push(start.to_string());
     } else {
-        ranges.push(format!("{}-{}", start, end));
+        ranges.push(format!("{start}-{end}"));
     }
 
     ranges.join(", ")
@@ -256,12 +280,12 @@ mod tests {
             files: vec![],
             total_covered: 10,
             total_instrumentable: 10,
-            repo_line_rate: Some(0.85),
+            total_rate: Some(0.85),
             sha: Some("abc1234def".to_string()),
         };
         let body = report.format_markdown();
-        assert!(body.contains("Patch Coverage: 100.0%"));
-        assert!(body.contains("All patch lines are covered!"));
+        assert!(body.contains("Diff Coverage: 100.0%"));
+        assert!(body.contains("All diff lines are covered!"));
         assert!(body.contains("85.0%"));
         assert!(body.contains("[covrs](https://github.com/scttnlsn/covrs)"));
         assert!(body.contains("abc1234"));
@@ -279,7 +303,7 @@ mod tests {
             }],
             total_covered: 3,
             total_instrumentable: 5,
-            repo_line_rate: None,
+            total_rate: None,
             sha: None,
         };
         let body = report.format_markdown();
@@ -287,5 +311,25 @@ mod tests {
         assert!(body.contains("src/foo.rs"));
         assert!(body.contains("5-6"));
         assert!(body.contains("Missed lines"));
+    }
+
+    #[test]
+    fn test_format_with_trait() {
+        let report = DiffCoverageReport {
+            diff_files: 1,
+            diff_lines: 5,
+            files: vec![],
+            total_covered: 5,
+            total_instrumentable: 5,
+            total_rate: None,
+            sha: None,
+        };
+
+        // Test using the trait directly
+        let text = report.format(&TextFormatter);
+        assert!(text.contains("Diff coverage: 100.0%"));
+
+        let md = report.format(&MarkdownFormatter);
+        assert!(md.contains("Diff Coverage: 100.0%"));
     }
 }

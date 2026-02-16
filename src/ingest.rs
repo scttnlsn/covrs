@@ -1,17 +1,14 @@
 use std::path::Path;
 
-use crate::db;
-use crate::detect::{detect_format, Format};
-use crate::error::{CovrsError, Result};
-use crate::model::CoverageData;
-use crate::parsers::cobertura::CoberturaParser;
-use crate::parsers::lcov::LcovParser;
-use crate::parsers::Parser;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
+
+use crate::db;
+use crate::parsers::{self, Format};
 
 /// Read a coverage file, auto-detect its format (or use the override),
 /// parse it, and insert into the database.
-/// Returns (report_id, detected_format, actual_report_name).
+/// Returns (report_id, format, actual_report_name).
 pub fn ingest(
     conn: &mut Connection,
     file_path: &Path,
@@ -19,17 +16,20 @@ pub fn ingest(
     report_name: Option<&str>,
     overwrite: bool,
 ) -> Result<(i64, Format, String)> {
-    let content = std::fs::read(file_path)?;
+    let content = std::fs::read(file_path)
+        .with_context(|| format!("Failed to read {}", file_path.display()))?;
 
-    // Determine format
-    let format = if let Some(fmt_str) = format_override {
-        fmt_str.parse::<Format>()?
+    // Get the right parser — explicit override or auto-detect
+    let parser = if let Some(fmt_str) = format_override {
+        let format = fmt_str.parse::<Format>()?;
+        parsers::for_format(format)
     } else {
-        detect_format(file_path, &content).ok_or(CovrsError::UnknownFormat)?
+        parsers::detect(file_path, &content)
+            .ok_or_else(|| anyhow::anyhow!("Unknown coverage format"))?
     };
 
-    // Parse
-    let data = parse_with_format(format, &content)?;
+    let format = parser.format();
+    let data = parser.parse(&content)?;
 
     // Warn on empty coverage data
     if data.files.is_empty() {
@@ -54,18 +54,11 @@ pub fn ingest(
     let report_id = db::insert_coverage(
         conn,
         &name,
-        format.as_str(),
+        &format.to_string(),
         source_file_str,
         &data,
         overwrite,
     )?;
 
     Ok((report_id, format, name))
-}
-
-fn parse_with_format(format: Format, content: &[u8]) -> Result<CoverageData> {
-    match format {
-        Format::Cobertura => CoberturaParser.parse(content),
-        Format::Lcov => LcovParser.parse(content),
-    }
 }

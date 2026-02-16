@@ -1,7 +1,5 @@
 mod common;
 
-use covrs::parsers::Parser;
-
 /// End-to-end: parse a real diff file, ingest coverage, compute diff coverage.
 #[test]
 fn diff_coverage_end_to_end() {
@@ -26,7 +24,7 @@ DA:13,1\n\
 DA:14,0\n\
 DA:15,1\n\
 end_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
+    let data = covrs::parsers::lcov::parse(lcov).unwrap();
     covrs::db::insert_coverage(&mut conn, "test", "lcov", None, &data, false).unwrap();
 
     // Parse the modified_file.diff fixture — adds lines 11, 12, 14 in src/main.rs
@@ -45,7 +43,7 @@ fn diff_coverage_ignores_non_instrumentable_lines() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let lcov = b"SF:src/main.rs\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nDA:5,1\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
+    let data = covrs::parsers::lcov::parse(lcov).unwrap();
     covrs::db::insert_coverage(&mut conn, "test", "lcov", None, &data, false).unwrap();
 
     // Diff adds lines 2, 3, 4, and 10 (10 is not in coverage data at all)
@@ -64,7 +62,7 @@ fn diff_coverage_single_report() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let lcov = b"SF:src/main.rs\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nDA:5,1\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
+    let data = covrs::parsers::lcov::parse(lcov).unwrap();
     covrs::db::insert_coverage(&mut conn, "test", "lcov", None, &data, false).unwrap();
 
     let mut diff_lines = std::collections::HashMap::new();
@@ -84,12 +82,12 @@ fn diff_coverage_multiple_reports() {
 
     // Report A: lines 1 covered, 2 not covered, 3 covered
     let lcov_a = b"SF:src/main.rs\nDA:1,1\nDA:2,0\nDA:3,1\nend_of_record\n";
-    let data_a = covrs::parsers::lcov::LcovParser.parse(lcov_a).unwrap();
+    let data_a = covrs::parsers::lcov::parse(lcov_a).unwrap();
     covrs::db::insert_coverage(&mut conn, "report-a", "lcov", None, &data_a, false).unwrap();
 
     // Report B: lines 1 not covered, 2 covered, 3 not covered
     let lcov_b = b"SF:src/main.rs\nDA:1,0\nDA:2,1\nDA:3,0\nend_of_record\n";
-    let data_b = covrs::parsers::lcov::LcovParser.parse(lcov_b).unwrap();
+    let data_b = covrs::parsers::lcov::parse(lcov_b).unwrap();
     covrs::db::insert_coverage(&mut conn, "report-b", "lcov", None, &data_b, false).unwrap();
 
     let mut diff_lines = std::collections::HashMap::new();
@@ -109,13 +107,13 @@ fn diff_coverage_multiple_files() {
     // Report A covers file1 but not file2
     let lcov_a = b"SF:src/file1.rs\nDA:1,1\nDA:2,0\nend_of_record\n\
                     SF:src/file2.rs\nDA:1,0\nDA:2,0\nend_of_record\n";
-    let data_a = covrs::parsers::lcov::LcovParser.parse(lcov_a).unwrap();
+    let data_a = covrs::parsers::lcov::parse(lcov_a).unwrap();
     covrs::db::insert_coverage(&mut conn, "report-a", "lcov", None, &data_a, false).unwrap();
 
     // Report B covers file2 but not file1
     let lcov_b = b"SF:src/file1.rs\nDA:1,0\nDA:2,0\nend_of_record\n\
                     SF:src/file2.rs\nDA:1,1\nDA:2,1\nend_of_record\n";
-    let data_b = covrs::parsers::lcov::LcovParser.parse(lcov_b).unwrap();
+    let data_b = covrs::parsers::lcov::parse(lcov_b).unwrap();
     covrs::db::insert_coverage(&mut conn, "report-b", "lcov", None, &data_b, false).unwrap();
 
     let mut diff_lines = std::collections::HashMap::new();
@@ -135,7 +133,7 @@ fn diff_coverage_unknown_file() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let lcov = b"SF:src/main.rs\nDA:1,1\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
+    let data = covrs::parsers::lcov::parse(lcov).unwrap();
     covrs::db::insert_coverage(&mut conn, "test", "lcov", None, &data, false).unwrap();
 
     let mut diff_lines = std::collections::HashMap::new();
@@ -152,7 +150,7 @@ fn diff_coverage_empty_diff() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let lcov = b"SF:src/main.rs\nDA:1,1\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
+    let data = covrs::parsers::lcov::parse(lcov).unwrap();
     covrs::db::insert_coverage(&mut conn, "test", "lcov", None, &data, false).unwrap();
 
     let diff_lines = std::collections::HashMap::new();

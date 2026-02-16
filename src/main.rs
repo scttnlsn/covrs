@@ -1,10 +1,10 @@
 use std::path::PathBuf;
-use std::process::Command;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-use covrs::{cli, db, github};
+use covrs::diff::{DiffSource, GitDiff, GitHubDiff, StdinDiff};
+use covrs::{cli, db};
 
 /// covrs — Multi-format code coverage ingestion into a unified SQLite store.
 #[derive(Parser)]
@@ -61,7 +61,7 @@ enum Commands {
         uncovered: bool,
     },
 
-    /// Compute coverage for lines in a git diff (patch coverage).
+    /// Compute coverage for lines in a git diff (diff coverage).
     ///
     /// By default, reads a diff from stdin or via --git-diff and prints a
     /// plain-text coverage summary to stdout. Use --style to control the
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
                 name.as_deref(),
                 overwrite,
             )?;
-            print!("{}", out);
+            print!("{out}");
         }
         Commands::Summary => print!("{}", cli::cmd_summary(&conn)?),
         Commands::Reports => print!("{}", cli::cmd_reports(&conn)?),
@@ -147,46 +147,24 @@ fn run_diff_coverage(
     style: cli::Style,
     comment: bool,
 ) -> Result<()> {
-    use std::io::Read;
-
-    // Resolve GitHub context when posting a comment
-    let gh = if comment {
-        Some(github::Context::from_env()?)
-    } else {
-        None
-    };
-
-    // Get the diff text — fetch from GitHub when commenting, otherwise local
-    let diff_text = if let Some(ref gh) = gh {
-        gh.fetch_diff()?
-    } else if let Some(ref diff_arg) = git_diff {
-        let diff_args: Vec<&str> = diff_arg.split_whitespace().collect();
-        let output = Command::new("git")
-            .arg("diff")
-            .args(&diff_args)
-            .output()
-            .context("Failed to run git diff")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("git diff failed: {}", stderr);
-        }
-        String::from_utf8(output.stdout).context("git diff output not valid UTF-8")?
-    } else {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("Failed to read diff from stdin")?;
-        buf
-    };
-
-    let sha = gh.as_ref().and_then(|gh| gh.sha.clone());
-
-    let output = cli::cmd_diff_coverage(conn, &diff_text, path_prefix.as_deref(), &style, sha)?;
-
-    if let Some(ref gh) = gh {
+    if comment {
+        // GitHub mode: fetch diff from the API and post results as a PR comment
+        let gh = GitHubDiff::from_env()?;
+        let diff_text = gh.fetch_diff()?;
+        let output =
+            cli::cmd_diff_coverage(conn, &diff_text, path_prefix.as_deref(), &style, gh.sha())?;
         gh.post_comment(&output)?;
     } else {
-        print!("{}", output);
+        // Local mode: read diff from git or stdin
+        let source: Box<dyn DiffSource> = if let Some(args) = git_diff {
+            Box::new(GitDiff { args })
+        } else {
+            Box::new(StdinDiff)
+        };
+        let diff_text = source.fetch_diff()?;
+        let output =
+            cli::cmd_diff_coverage(conn, &diff_text, path_prefix.as_deref(), &style, None)?;
+        print!("{output}");
     }
 
     Ok(())

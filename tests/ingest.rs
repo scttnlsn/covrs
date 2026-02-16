@@ -1,5 +1,6 @@
 mod common;
 
+use covrs::parsers::Format;
 use std::io::Write;
 
 /// Test the full `ingest::ingest()` pipeline: read file from disk, auto-detect format, insert.
@@ -18,7 +19,7 @@ fn ingest_lcov_file_auto_detect() {
         covrs::ingest::ingest(&mut conn, &lcov_path, None, None, false).unwrap();
 
     assert!(report_id > 0);
-    assert_eq!(format, covrs::detect::Format::Lcov);
+    assert_eq!(format, Format::Lcov);
     assert_eq!(name, "coverage.lcov");
 
     let summary = covrs::db::get_summary(&conn).unwrap();
@@ -40,7 +41,7 @@ fn ingest_cobertura_file_auto_detect() {
         covrs::ingest::ingest(&mut conn, &xml_path, None, None, false).unwrap();
 
     assert!(report_id > 0);
-    assert_eq!(format, covrs::detect::Format::Cobertura);
+    assert_eq!(format, Format::Cobertura);
 
     let summary = covrs::db::get_summary(&conn).unwrap();
     assert!(summary.total_lines > 0);
@@ -58,7 +59,7 @@ fn ingest_with_format_override() {
     let (_id, format, _name) =
         covrs::ingest::ingest(&mut conn, &lcov_path, Some("lcov"), None, false).unwrap();
 
-    assert_eq!(format, covrs::detect::Format::Lcov);
+    assert_eq!(format, Format::Lcov);
 }
 
 #[test]
@@ -74,7 +75,7 @@ fn ingest_with_custom_report_name() {
     assert_eq!(name, "my-report");
 
     let reports = covrs::db::list_reports(&conn).unwrap();
-    assert_eq!(reports[0].0, "my-report");
+    assert_eq!(reports[0].name, "my-report");
 }
 
 #[test]
@@ -152,5 +153,5 @@ fn ingest_empty_coverage_file() {
     // Verify the report was created even though it has no coverage data
     let reports = covrs::db::list_reports(&conn).unwrap();
     assert_eq!(reports.len(), 1);
-    assert_eq!(reports[0].0, "empty");
+    assert_eq!(reports[0].name, "empty");
 }

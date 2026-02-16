@@ -1,13 +1,11 @@
 mod common;
 
-use covrs::parsers::Parser;
-
 #[test]
 fn ingest_and_query() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let lcov = b"TN:test\nSF:/src/main.rs\nDA:1,5\nDA:2,5\nDA:3,0\nLF:3\nLH:2\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
+    let data = covrs::parsers::lcov::parse(lcov).unwrap();
 
     covrs::db::insert_coverage(&mut conn, "test-lcov", "lcov", None, &data, false).unwrap();
 

@@ -1,14 +1,13 @@
 mod common;
 
 use covrs::model::{CoverageData, FileCoverage, FunctionCoverage, LineCoverage};
-use covrs::parsers::Parser;
 
 #[test]
 fn duplicate_report_name_fails() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let lcov = b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n";
-    let data = covrs::parsers::lcov::LcovParser.parse(lcov).unwrap();
+    let data = covrs::parsers::lcov::parse(lcov).unwrap();
 
     covrs::db::insert_coverage(&mut conn, "dupe", "lcov", None, &data, false).unwrap();
     let result = covrs::db::insert_coverage(&mut conn, "dupe", "lcov", None, &data, false);

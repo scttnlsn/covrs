@@ -22,29 +22,43 @@
 ///     </packages>
 ///   </coverage>
 use std::collections::HashMap;
-use std::str;
+use std::path::Path;
 use std::sync::LazyLock;
 
-use quick_xml::events::Event;
+use anyhow::Result;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use regex::Regex;
 
 /// Pre-compiled regex for condition-coverage attributes like "75% (3/4)".
 static BRANCH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\((\d+)/(\d+)\)").unwrap());
 
-use crate::error::{CovrsError, Result};
+use super::{CoverageParser, Format};
 use crate::model::*;
-use crate::parsers::Parser;
 
+/// Cobertura XML format parser.
 pub struct CoberturaParser;
 
-impl Parser for CoberturaParser {
+impl CoverageParser for CoberturaParser {
+    fn format(&self) -> Format {
+        Format::Cobertura
+    }
+
+    fn can_parse(&self, _path: &Path, content: &[u8]) -> bool {
+        let head_len = content.len().min(4096);
+        let head = String::from_utf8_lossy(&content[..head_len]);
+
+        // XML with a <coverage element
+        (head.contains("<?xml") || head.trim_start().starts_with('<')) && head.contains("<coverage")
+    }
+
     fn parse(&self, input: &[u8]) -> Result<CoverageData> {
-        parse_cobertura(input)
+        parse(input)
     }
 }
 
-fn parse_cobertura(input: &[u8]) -> Result<CoverageData> {
+/// Parse Cobertura XML coverage data from raw bytes.
+pub fn parse(input: &[u8]) -> Result<CoverageData> {
     let mut reader = Reader::from_reader(input);
     reader.trim_text(true);
 
@@ -71,17 +85,13 @@ fn parse_cobertura(input: &[u8]) -> Result<CoverageData> {
         let is_start_event = matches!(&event, Ok(Event::Start(_)));
         match event {
             Err(e) => {
-                return Err(CovrsError::Xml {
-                    position: reader.buffer_position(),
-                    source: e,
-                })
+                let pos = reader.buffer_position();
+                return Err(e)
+                    .map_err(|e| anyhow::anyhow!("XML parse error at position {pos}: {e}"));
             }
             Ok(Event::Eof) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
-                let local_name = e.name();
-                let local = local_name.as_ref().to_vec();
-
-                match local.as_slice() {
+                match e.name().as_ref() {
                     b"source" => {
                         // Only set in_source for Start events; self-closing
                         // <source/> (Empty) has no text content and no
@@ -92,89 +102,109 @@ fn parse_cobertura(input: &[u8]) -> Result<CoverageData> {
                         }
                     }
                     b"class" => {
-                        let attrs = attr_map(e);
-                        if let Some(filename) = attrs.get("filename") {
-                            let path = resolve_source_path(filename, &sources);
+                        if let Some(filename) = get_attr(e, b"filename") {
+                            let path = resolve_source_path(&filename, &sources);
                             current_file = Some(FileCoverage::new(path));
                             branch_indices.clear();
                             line_index_map.clear();
                         }
                     }
                     b"method" => {
-                        let attrs = attr_map(e);
                         in_method = true;
-                        current_method_name = attrs.get("name").cloned();
+                        current_method_name = get_attr(e, b"name");
                         method_hit = false;
                         method_start_line = None;
                     }
                     b"line" => {
-                        let attrs = attr_map(e);
                         if let Some(file) = current_file.as_mut() {
-                            if let Some(number_str) = attrs.get("number") {
-                                if let Ok(line_number) = number_str.parse::<u32>() {
-                                    let hit_count = attrs
-                                        .get("hits")
-                                        .and_then(|h| h.parse::<u64>().ok())
-                                        .unwrap_or(0);
+                            // Extract all needed attributes in a single pass
+                            let mut number: Option<u32> = None;
+                            let mut hits: u64 = 0;
+                            let mut is_branch = false;
+                            let mut cond_cov: Option<String> = None;
 
-                                    // Always collect line coverage. Lines may appear both
-                                    // under <method><lines> and <class><lines>, or only in
-                                    // one of them depending on the generator. We deduplicate
-                                    // by keeping the max hit_count for each line number.
-                                    if let Some(&idx) = line_index_map.get(&line_number) {
-                                        if hit_count > file.lines[idx].hit_count {
-                                            file.lines[idx].hit_count = hit_count;
-                                        }
-                                    } else {
-                                        line_index_map.insert(line_number, file.lines.len());
-                                        file.lines.push(LineCoverage {
-                                            line_number,
-                                            hit_count,
-                                        });
+                            for attr in e.attributes().flatten() {
+                                match attr.key.as_ref() {
+                                    b"number" => {
+                                        number =
+                                            attr.unescape_value().ok().and_then(|v| v.parse().ok());
                                     }
-
-                                    // Track method start line and hit status
-                                    if in_method {
-                                        if method_start_line.is_none() {
-                                            method_start_line = Some(line_number);
-                                        }
-                                        if hit_count > 0 {
-                                            method_hit = true;
-                                        }
+                                    b"hits" => {
+                                        hits = attr
+                                            .unescape_value()
+                                            .ok()
+                                            .and_then(|v| v.parse().ok())
+                                            .unwrap_or(0);
                                     }
+                                    b"branch" => {
+                                        is_branch = attr
+                                            .unescape_value()
+                                            .ok()
+                                            .map(|v| v == "true")
+                                            .unwrap_or(false);
+                                    }
+                                    b"condition-coverage" => {
+                                        cond_cov =
+                                            attr.unescape_value().ok().map(|v| v.into_owned());
+                                    }
+                                    _ => {}
+                                }
+                            }
 
-                                    // Branch coverage — only process on first
-                                    // encounter of this line to avoid double-counting
-                                    // when the same line appears in both <method> and
-                                    // <class> blocks.
-                                    let is_branch =
-                                        attrs.get("branch").map(|v| v == "true").unwrap_or(false);
+                            if let Some(line_number) = number {
+                                let hit_count = hits;
 
-                                    if is_branch && !branch_indices.contains_key(&line_number) {
-                                        if let Some(cond) = attrs.get("condition-coverage") {
-                                            if let Some(caps) = branch_re.captures(cond) {
-                                                let covered: u32 = caps[1].parse().unwrap_or(0);
-                                                let total: u32 = caps[2].parse().unwrap_or(0);
+                                // Always collect line coverage. Lines may appear both
+                                // under <method><lines> and <class><lines>, or only in
+                                // one of them depending on the generator. We deduplicate
+                                // by keeping the max hit_count for each line number.
+                                if let Some(&idx) = line_index_map.get(&line_number) {
+                                    if hit_count > file.lines[idx].hit_count {
+                                        file.lines[idx].hit_count = hit_count;
+                                    }
+                                } else {
+                                    line_index_map.insert(line_number, file.lines.len());
+                                    file.lines.push(LineCoverage {
+                                        line_number,
+                                        hit_count,
+                                    });
+                                }
 
-                                                for i in 0..total {
-                                                    // Cobertura's condition-coverage only tells
-                                                    // us how many branches were taken, not per-
-                                                    // branch execution counts. Use 1 for covered
-                                                    // arms and 0 for uncovered.
-                                                    let branch_hit: u64 =
-                                                        if i < covered { 1 } else { 0 };
-                                                    let idx = branch_indices
-                                                        .entry(line_number)
-                                                        .or_insert(0);
-                                                    file.branches.push(BranchCoverage {
-                                                        line_number,
-                                                        branch_index: *idx,
-                                                        hit_count: branch_hit,
-                                                    });
-                                                    *branch_indices
-                                                        .get_mut(&line_number)
-                                                        .unwrap() += 1;
-                                                }
+                                // Track method start line and hit status
+                                if in_method {
+                                    if method_start_line.is_none() {
+                                        method_start_line = Some(line_number);
+                                    }
+                                    if hit_count > 0 {
+                                        method_hit = true;
+                                    }
+                                }
+
+                                // Branch coverage — only process on first
+                                // encounter of this line to avoid double-counting
+                                // when the same line appears in both <method> and
+                                // <class> blocks.
+                                if is_branch && !branch_indices.contains_key(&line_number) {
+                                    if let Some(cond) = cond_cov.as_deref() {
+                                        if let Some(caps) = branch_re.captures(cond) {
+                                            let covered: u32 = caps[1].parse().unwrap_or(0);
+                                            let total: u32 = caps[2].parse().unwrap_or(0);
+
+                                            for i in 0..total {
+                                                // Cobertura's condition-coverage only tells
+                                                // us how many branches were taken, not per-
+                                                // branch execution counts. Use 1 for covered
+                                                // arms and 0 for uncovered.
+                                                let branch_hit: u64 =
+                                                    if i < covered { 1 } else { 0 };
+                                                let idx =
+                                                    branch_indices.entry(line_number).or_insert(0);
+                                                file.branches.push(BranchCoverage {
+                                                    line_number,
+                                                    branch_index: *idx,
+                                                    hit_count: branch_hit,
+                                                });
+                                                *idx += 1;
                                             }
                                         }
                                     }
@@ -193,37 +223,33 @@ fn parse_cobertura(input: &[u8]) -> Result<CoverageData> {
                     in_source = false;
                 }
             }
-            Ok(Event::End(ref e)) => {
-                let local_name = e.name();
-                let local = local_name.as_ref().to_vec();
-                match local.as_slice() {
-                    b"source" => {
-                        in_source = false;
-                    }
-                    b"class" => {
-                        if let Some(file) = current_file.take() {
-                            data.files.push(file);
-                        }
-                    }
-                    b"method" => {
-                        if in_method {
-                            if let (Some(file), Some(name)) =
-                                (current_file.as_mut(), current_method_name.take())
-                            {
-                                file.functions.push(FunctionCoverage {
-                                    name,
-                                    start_line: method_start_line,
-                                    end_line: None,
-                                    hit_count: if method_hit { 1 } else { 0 },
-                                });
-                            }
-                            in_method = false;
-                            method_start_line = None;
-                        }
-                    }
-                    _ => {}
+            Ok(Event::End(ref e)) => match e.name().as_ref() {
+                b"source" => {
+                    in_source = false;
                 }
-            }
+                b"class" => {
+                    if let Some(file) = current_file.take() {
+                        data.files.push(file);
+                    }
+                }
+                b"method" => {
+                    if in_method {
+                        if let (Some(file), Some(name)) =
+                            (current_file.as_mut(), current_method_name.take())
+                        {
+                            file.functions.push(FunctionCoverage {
+                                name,
+                                start_line: method_start_line,
+                                end_line: None,
+                                hit_count: if method_hit { 1 } else { 0 },
+                            });
+                        }
+                        in_method = false;
+                        method_start_line = None;
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
         buf.clear();
@@ -255,24 +281,16 @@ fn resolve_source_path(filename: &str, sources: &[String]) -> String {
     for source in sources {
         let base = source.trim_end_matches('/');
         if !base.is_empty() {
-            return format!("{}/{}", base, filename);
+            return format!("{base}/{filename}");
         }
     }
     filename.to_string()
 }
 
-/// Extract attributes from an XML element into a HashMap.
-fn attr_map(e: &quick_xml::events::BytesStart) -> HashMap<String, String> {
-    e.attributes()
-        .filter_map(|a| {
-            let attr = a.ok()?;
-            let key = str::from_utf8(attr.key.local_name().into_inner())
-                .ok()?
-                .to_string();
-            let value = attr.unescape_value().ok()?.to_string();
-            Some((key, value))
-        })
-        .collect()
+/// Extract a single attribute value from an XML element.
+fn get_attr(e: &BytesStart<'_>, name: &[u8]) -> Option<String> {
+    let attr = e.try_get_attribute(name).ok()??;
+    attr.unescape_value().ok().map(|v| v.into_owned())
 }
 
 #[cfg(test)]
@@ -282,8 +300,7 @@ mod tests {
     #[test]
     fn test_parse_cobertura() {
         let input = include_bytes!("../../tests/fixtures/sample_cobertura.xml");
-        let parser = CoberturaParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
 
         assert_eq!(data.files.len(), 2);
 
@@ -318,8 +335,7 @@ mod tests {
         // Branch line appears in both <method><lines> and <class><lines>.
         // We must not double-count the branch arms.
         let input = include_bytes!("../../tests/fixtures/cobertura_branch_in_method_and_class.xml");
-        let parser = CoberturaParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
 
         assert_eq!(data.files.len(), 1);
         let file = &data.files[0];
@@ -341,8 +357,7 @@ mod tests {
     fn test_parse_cobertura_multiple_sources() {
         // First <source> is empty, second is the real prefix.
         let input = include_bytes!("../../tests/fixtures/cobertura_multiple_sources.xml");
-        let parser = CoberturaParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
 
         assert_eq!(data.files.len(), 1);
         // Should use the first non-empty source as prefix, not the empty one.
@@ -352,8 +367,7 @@ mod tests {
     #[test]
     fn test_parse_cobertura_no_sources() {
         let input = include_bytes!("../../tests/fixtures/cobertura_no_sources.xml");
-        let parser = CoberturaParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
         assert_eq!(data.files.len(), 1);
         assert_eq!(data.files[0].path, "src/f.rs");
     }
@@ -362,8 +376,7 @@ mod tests {
     fn test_parse_cobertura_empty() {
         // A valid Cobertura file with no classes should produce empty CoverageData.
         let input = include_bytes!("../../tests/fixtures/empty_cobertura.xml");
-        let parser = CoberturaParser;
-        let data = parser.parse(input).unwrap();
+        let data = parse(input).unwrap();
         assert_eq!(data.files.len(), 0);
     }
 
@@ -371,15 +384,13 @@ mod tests {
     fn test_parse_cobertura_malformed() {
         // Malformed XML should produce a meaningful error with position info.
         let input = include_bytes!("../../tests/fixtures/malformed_cobertura.xml");
-        let parser = CoberturaParser;
-        let result = parser.parse(input);
+        let result = parse(input);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         // Error should mention position
         assert!(
             err_msg.contains("position"),
-            "Error should contain position info: {}",
-            err_msg
+            "Error should contain position info: {err_msg}",
         );
     }
 }
