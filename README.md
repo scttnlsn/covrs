@@ -2,6 +2,8 @@
 
 Ingest multi-format code coverage reports into a unified SQLite store. Query and diff coverage data from a single database — no server required. Post coverage results as comments on GitHub pull requests with a single command or [reusable Action](#github-action).
 
+Here's a [demo](https://github.com/scttnlsn/covrs/pull/3).
+
 ## Why
 
 Coverage tools produce reports in different formats (LCOV, Cobertura, etc.) and each has its own tooling. **covrs** normalizes them all into one SQLite database so you can:
