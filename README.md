@@ -148,22 +148,26 @@ Actions environment variables (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
 
 ## GitHub Action
 
-covrs is available as a reusable GitHub Action. Run your tests and ingest
-coverage first, then add the action to post the patch-coverage comment:
+covrs is available as a reusable GitHub Action. It installs covrs,
+optionally ingests coverage files, and posts a patch-coverage comment on
+the pull request:
 
 ```yaml
-- name: Patch coverage
-  uses: scttnlsn/covrs@v1
+- name: Coverage report
+  uses: scttnlsn/covrs@v0
+  with:
+    coverage-files: coverage.lcov
 ```
 
 #### Inputs
 
-| Input         | Description                                      | Default     |
-|---------------|--------------------------------------------------|-------------|
-| `token`       | GitHub token for API access                      | `${{ github.token }}` |
-| `db`          | Path to the covrs SQLite database                | `.covrs.db` |
-| `path-prefix` | Prefix to prepend to diff paths for matching     |             |
-| `version`     | covrs version to install (e.g. `0.1.0`)          | latest release |
+| Input            | Description                                      | Default     |
+|------------------|--------------------------------------------------|-------------|
+| `token`          | GitHub token for API access                      | `${{ github.token }}` |
+| `coverage-files` | Coverage file(s) to ingest (space or newline separated) | *required* |
+| `db`             | Path to the covrs SQLite database                | `.covrs.db` |
+| `path-prefix`    | Prefix to prepend to diff paths for matching     |             |
+| `version`        | covrs version to install (e.g. `0.1.0`)          | latest release |
 
 #### Full example
 
@@ -186,12 +190,10 @@ jobs:
       # Run tests and generate coverage
       - run: cargo llvm-cov test --lcov --output-path coverage.lcov
 
-      # Install covrs and ingest
-      - run: cargo install covrs
-      - run: covrs ingest coverage.lcov
-
-      # Post the patch-coverage comment
-      - uses: scttnlsn/covrs@v1
+      # Ingest and post the patch-coverage comment
+      - uses: scttnlsn/covrs@v0
+        with:
+          coverage-files: coverage.lcov
 ```
 
 ## Global Options
@@ -222,8 +224,12 @@ You can query the database directly:
 ```sql
 sqlite3 .covrs.db "
   SELECT sf.path, COUNT(*) as total,
-         SUM(CASE WHEN lc.hit_count > 0 THEN 1 ELSE 0 END) as covered
-  FROM line_coverage lc
+         SUM(CASE WHEN lc.max_hits > 0 THEN 1 ELSE 0 END) as covered
+  FROM (
+      SELECT source_file_id, line_number, MAX(hit_count) as max_hits
+      FROM line_coverage
+      GROUP BY source_file_id, line_number
+  ) lc
   JOIN source_file sf ON sf.id = lc.source_file_id
   GROUP BY sf.path
   ORDER BY covered * 1.0 / total
