@@ -3,6 +3,12 @@ name = "covrs"
 version = "0.1.0"
 edition = "2021"
 description = "Code coverage ingestion and reporting"
+license = "MIT"
+repository = "https://github.com/scott/covrs"
+readme = "README.md"
+keywords = ["coverage", "lcov", "cobertura", "reporting"]
+categories = ["command-line-utilities", "development-tools::testing"]
+exclude = ["tests/", "scripts/"]
 
 [dependencies]
 anyhow = "1"
