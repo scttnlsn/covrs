@@ -84,11 +84,12 @@ impl ReportFormatter for TextFormatter {
         )
         .unwrap();
 
-        let files_with_misses: Vec<_> = report
+        let mut files_with_misses: Vec<_> = report
             .files
             .iter()
             .filter(|f| !f.missed_lines.is_empty())
             .collect();
+        files_with_misses.sort_by(|a, b| a.rate().partial_cmp(&b.rate()).unwrap());
         if !files_with_misses.is_empty() {
             out.push('\n');
             for f in &files_with_misses {
@@ -138,11 +139,12 @@ impl ReportFormatter for MarkdownFormatter {
         }
         md.push('\n');
 
-        let files_with_misses: Vec<&FileDiffCoverage> = report
+        let mut files_with_misses: Vec<&FileDiffCoverage> = report
             .files
             .iter()
             .filter(|f| !f.missed_lines.is_empty())
             .collect();
+        files_with_misses.sort_by(|a, b| a.rate().partial_cmp(&b.rate()).unwrap());
 
         if files_with_misses.is_empty() {
             md.push_str("\nAll diff lines are covered! 🎉\n");
