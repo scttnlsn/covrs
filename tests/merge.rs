@@ -35,7 +35,10 @@ fn merge_function_coverage_with_null_start_line() {
     // Report A: function "process" with no start_line, hit 2 times
     let mut data_a = CoverageData::new();
     let mut file_a = FileCoverage::new("/src/lib.rs".to_string());
-    file_a.lines.push(LineCoverage { line_number: 1, hit_count: 1 });
+    file_a.lines.push(LineCoverage {
+        line_number: 1,
+        hit_count: 1,
+    });
     file_a.functions.push(FunctionCoverage {
         name: "process".to_string(),
         start_line: None,
@@ -48,7 +51,10 @@ fn merge_function_coverage_with_null_start_line() {
     // Report B: same function, hit 3 times
     let mut data_b = CoverageData::new();
     let mut file_b = FileCoverage::new("/src/lib.rs".to_string());
-    file_b.lines.push(LineCoverage { line_number: 1, hit_count: 1 });
+    file_b.lines.push(LineCoverage {
+        line_number: 1,
+        hit_count: 1,
+    });
     file_b.functions.push(FunctionCoverage {
         name: "process".to_string(),
         start_line: None,

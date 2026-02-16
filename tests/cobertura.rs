@@ -7,7 +7,9 @@ fn ingest_and_query() {
     let (mut conn, _dir, _) = common::setup_db();
 
     let xml = include_bytes!("fixtures/coverage.xml");
-    let data = covrs::parsers::cobertura::CoberturaParser.parse(xml).unwrap();
+    let data = covrs::parsers::cobertura::CoberturaParser
+        .parse(xml)
+        .unwrap();
 
     let report_id = covrs::db::insert_coverage(
         &mut conn,

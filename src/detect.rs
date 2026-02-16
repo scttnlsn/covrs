@@ -78,7 +78,9 @@ fn detect_by_content(content: &[u8]) -> Option<Format> {
     // Check that lines actually start with these tags to avoid false positives
     // on files that merely contain these strings.
     let has_sf = head.lines().any(|l| l.starts_with("SF:"));
-    let has_da_or_fn = head.lines().any(|l| l.starts_with("DA:") || l.starts_with("FN:"));
+    let has_da_or_fn = head
+        .lines()
+        .any(|l| l.starts_with("DA:") || l.starts_with("FN:"));
     if has_sf && has_da_or_fn {
         return Some(Format::Lcov);
     }

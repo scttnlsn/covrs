@@ -26,22 +26,17 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
 
     // Check or insert schema version
-    let count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM schema_version",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: u32 = conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
     if count == 0 {
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
             params![SCHEMA_VERSION],
         )?;
     } else {
-        let version: u32 = conn.query_row(
-            "SELECT version FROM schema_version LIMIT 1",
-            [],
-            |row| row.get(0),
-        )?;
+        let version: u32 =
+            conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get(0)
+            })?;
         if version == SCHEMA_VERSION {
             return Ok(());
         }
@@ -95,10 +90,7 @@ fn migrate(conn: &Connection, from_version: u32) -> Result<()> {
         #[allow(unreachable_code)]
         {
             current += 1;
-            conn.execute(
-                "UPDATE schema_version SET version = ?1",
-                params![current],
-            )?;
+            conn.execute("UPDATE schema_version SET version = ?1", params![current])?;
         }
     }
     Ok(())
@@ -158,7 +150,12 @@ fn insert_coverage_tx(
                  VALUES (?1, ?2, ?3, ?4)",
             )?;
             for line in &file_cov.lines {
-                stmt.execute(params![report_id, file_id, line.line_number, line.hit_count])?;
+                stmt.execute(params![
+                    report_id,
+                    file_id,
+                    line.line_number,
+                    line.hit_count
+                ])?;
             }
         }
 
@@ -226,11 +223,7 @@ fn get_or_insert_source_file<'a>(
 
 /// Merge report `source_name` into `target_name`, summing hit counts.
 /// If `target_name` doesn't exist, creates it. Returns the target report id.
-pub fn merge_reports(
-    conn: &mut Connection,
-    source_name: &str,
-    target_name: &str,
-) -> Result<i64> {
+pub fn merge_reports(conn: &mut Connection, source_name: &str, target_name: &str) -> Result<i64> {
     let tx = conn.transaction()?;
 
     let source_id: i64 = tx
@@ -500,9 +493,8 @@ pub fn get_lines(
 
 /// List all report names in the database.
 pub fn list_reports(conn: &Connection) -> Result<Vec<(String, String, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT name, source_format, created_at FROM report ORDER BY created_at",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT name, source_format, created_at FROM report ORDER BY created_at")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -529,9 +521,7 @@ pub fn report_exists(conn: &Connection, name: &str) -> Result<bool> {
 
 /// Return the name of the most recently created report, if any.
 pub fn get_latest_report_name(conn: &Connection) -> Result<Option<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT name FROM report ORDER BY created_at DESC LIMIT 1",
-    )?;
+    let mut stmt = conn.prepare("SELECT name FROM report ORDER BY created_at DESC LIMIT 1")?;
     let mut rows = stmt.query([])?;
     match rows.next()? {
         Some(row) => Ok(Some(row.get(0)?)),

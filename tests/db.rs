@@ -45,7 +45,10 @@ fn function_coverage_null_start_line_dedup() {
 
     let mut data = CoverageData::new();
     let mut file = FileCoverage::new("/src/lib.rs".to_string());
-    file.lines.push(LineCoverage { line_number: 1, hit_count: 1 });
+    file.lines.push(LineCoverage {
+        line_number: 1,
+        hit_count: 1,
+    });
 
     // Two functions: same name, one with start_line, one without
     file.functions.push(FunctionCoverage {

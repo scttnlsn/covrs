@@ -138,8 +138,7 @@ fn parse_lcov(text: &str) -> Result<CoverageData> {
                             // indices. The (block, branch) pair from the BRDA
                             // record determines ordering — each unique BRDA
                             // record on a line gets the next index.
-                            let branch_index =
-                                branch_indices.entry(line_number).or_insert(0);
+                            let branch_index = branch_indices.entry(line_number).or_insert(0);
                             file.branches.push(BranchCoverage {
                                 line_number,
                                 branch_index: *branch_index,

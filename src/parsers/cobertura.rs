@@ -30,8 +30,7 @@ use quick_xml::reader::Reader;
 use regex::Regex;
 
 /// Pre-compiled regex for condition-coverage attributes like "75% (3/4)".
-static BRANCH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\((\d+)/(\d+)\)").unwrap());
+static BRANCH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\((\d+)/(\d+)\)").unwrap());
 
 use crate::error::{CovrsError, Result};
 use crate::model::*;
@@ -71,10 +70,12 @@ fn parse_cobertura(input: &[u8]) -> Result<CoverageData> {
         let event = reader.read_event_into(&mut buf);
         let is_start_event = matches!(&event, Ok(Event::Start(_)));
         match event {
-            Err(e) => return Err(CovrsError::Xml {
-                position: reader.buffer_position(),
-                source: e,
-            }),
+            Err(e) => {
+                return Err(CovrsError::Xml {
+                    position: reader.buffer_position(),
+                    source: e,
+                })
+            }
             Ok(Event::Eof) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let local_name = e.name();
@@ -146,29 +147,22 @@ fn parse_cobertura(input: &[u8]) -> Result<CoverageData> {
                                     // encounter of this line to avoid double-counting
                                     // when the same line appears in both <method> and
                                     // <class> blocks.
-                                    let is_branch = attrs
-                                        .get("branch")
-                                        .map(|v| v == "true")
-                                        .unwrap_or(false);
+                                    let is_branch =
+                                        attrs.get("branch").map(|v| v == "true").unwrap_or(false);
 
                                     if is_branch && !branch_indices.contains_key(&line_number) {
                                         if let Some(cond) = attrs.get("condition-coverage") {
                                             if let Some(caps) = branch_re.captures(cond) {
-                                                let covered: u32 =
-                                                    caps[1].parse().unwrap_or(0);
-                                                let total: u32 =
-                                                    caps[2].parse().unwrap_or(0);
+                                                let covered: u32 = caps[1].parse().unwrap_or(0);
+                                                let total: u32 = caps[2].parse().unwrap_or(0);
 
                                                 for i in 0..total {
                                                     // Cobertura's condition-coverage only tells
                                                     // us how many branches were taken, not per-
                                                     // branch execution counts. Use 1 for covered
                                                     // arms and 0 for uncovered.
-                                                    let branch_hit: u64 = if i < covered {
-                                                        1
-                                                    } else {
-                                                        0
-                                                    };
+                                                    let branch_hit: u64 =
+                                                        if i < covered { 1 } else { 0 };
                                                     let idx = branch_indices
                                                         .entry(line_number)
                                                         .or_insert(0);

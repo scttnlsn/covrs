@@ -53,11 +53,7 @@ fn ingest_with_format_override() {
 
     // Write lcov content but with a .txt extension (won't auto-detect by extension)
     let lcov_path = dir.path().join("data.txt");
-    std::fs::write(
-        &lcov_path,
-        b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n",
-    )
-    .unwrap();
+    std::fs::write(&lcov_path, b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n").unwrap();
 
     let (_id, format, _name) =
         covrs::ingest::ingest(&mut conn, &lcov_path, Some("lcov"), None, false).unwrap();
@@ -70,11 +66,7 @@ fn ingest_with_custom_report_name() {
     let (mut conn, dir, _) = common::setup_db();
 
     let lcov_path = dir.path().join("coverage.lcov");
-    std::fs::write(
-        &lcov_path,
-        b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n",
-    )
-    .unwrap();
+    std::fs::write(&lcov_path, b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n").unwrap();
 
     let (_id, _format, name) =
         covrs::ingest::ingest(&mut conn, &lcov_path, None, Some("my-report"), false).unwrap();
@@ -101,11 +93,7 @@ fn ingest_duplicate_name_fails() {
     let (mut conn, dir, _) = common::setup_db();
 
     let lcov_path = dir.path().join("coverage.lcov");
-    std::fs::write(
-        &lcov_path,
-        b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n",
-    )
-    .unwrap();
+    std::fs::write(&lcov_path, b"SF:/src/lib.rs\nDA:1,1\nend_of_record\n").unwrap();
 
     // First ingest succeeds
     covrs::ingest::ingest(&mut conn, &lcov_path, None, Some("dup"), false).unwrap();

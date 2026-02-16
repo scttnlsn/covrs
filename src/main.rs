@@ -120,9 +120,18 @@ fn main() -> Result<()> {
     db::init_schema(&conn).context("Failed to initialize schema")?;
 
     match cli.command {
-        Commands::Ingest { file, format, name, overwrite } => {
-            cmd_ingest(&mut conn, &file, format.as_deref(), name.as_deref(), overwrite)
-        }
+        Commands::Ingest {
+            file,
+            format,
+            name,
+            overwrite,
+        } => cmd_ingest(
+            &mut conn,
+            &file,
+            format.as_deref(),
+            name.as_deref(),
+            overwrite,
+        ),
         Commands::Summary { report } => cmd_summary(&conn, report.as_deref()),
         Commands::Reports => cmd_reports(&conn),
         Commands::Files {
@@ -143,7 +152,12 @@ fn main() -> Result<()> {
             report,
             git_diff,
             path_prefix,
-        } => cmd_diff_coverage(&conn, report.as_deref(), git_diff.as_deref(), path_prefix.as_deref()),
+        } => cmd_diff_coverage(
+            &conn,
+            report.as_deref(),
+            git_diff.as_deref(),
+            path_prefix.as_deref(),
+        ),
     }
 }
 
@@ -162,7 +176,8 @@ fn cmd_ingest(
     name: Option<&str>,
     overwrite: bool,
 ) -> Result<()> {
-    let (report_id, detected_format, actual_name) = ingest::ingest(conn, file, format, name, overwrite)?;
+    let (report_id, detected_format, actual_name) =
+        ingest::ingest(conn, file, format, name, overwrite)?;
     println!(
         "Ingested {} as format '{}' → report id {} (name: '{}')",
         file.display(),
@@ -251,11 +266,7 @@ fn cmd_files(
     Ok(())
 }
 
-fn cmd_lines(
-    conn: &rusqlite::Connection,
-    source_file: &str,
-    report: Option<&str>,
-) -> Result<()> {
+fn cmd_lines(conn: &rusqlite::Connection, source_file: &str, report: Option<&str>) -> Result<()> {
     let name = resolve_report_name(conn, report)?;
     let lines = db::get_lines(conn, &name, source_file)?;
 
@@ -400,7 +411,11 @@ fn cmd_diff_coverage(
     let (covered, total) = db::diff_coverage(conn, &name, &diff_lines)?;
 
     println!("Patch coverage for report '{}':", name);
-    println!("  Diff adds {} lines across {} files", total_diff_lines, diff_lines.len());
+    println!(
+        "  Diff adds {} lines across {} files",
+        total_diff_lines,
+        diff_lines.len()
+    );
     println!(
         "  Of those, {} are instrumentable, {} are covered",
         total, covered
