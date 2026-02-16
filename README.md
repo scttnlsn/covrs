@@ -120,7 +120,7 @@ Patch coverage: 78.9% (30/38 lines covered)
   src/foo.rs  8/12 (66.7%)  missed: 4, 7-9, 15
   src/bar.rs  2/3 (66.7%)   missed: 22
 
-Full repo line coverage: 85.0%
+Full project coverage: 85.0%
 ```
 
 Use `--style markdown` to get the output as markdown (e.g. for piping

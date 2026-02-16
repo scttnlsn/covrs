@@ -81,7 +81,7 @@ impl DiffCoverageReport {
 
         if let Some(rate) = self.repo_line_rate {
             out.push('\n');
-            writeln!(out, "Full repo line coverage: {:.1}%", rate * 100.0).unwrap();
+            writeln!(out, "Full project coverage: {:.1}%", rate * 100.0).unwrap();
         }
 
         out
@@ -153,12 +153,11 @@ impl DiffCoverageReport {
         md.push('\n');
         if let Some(rate) = self.repo_line_rate {
             md.push_str(&format!(
-                "<sub>Full repo line coverage: **{:.1}%** · covrs</sub>\n",
+                "<sub>Full project coverage: **{:.1}%**</sub>\n",
                 rate * 100.0
             ));
-        } else {
-            md.push_str("<sub>covrs</sub>\n");
         }
+        md.push_str("<sub>[covrs](https://github.com/scttnlsn/covrs)</sub>\n");
 
         md
     }
@@ -264,6 +263,7 @@ mod tests {
         assert!(body.contains("Patch Coverage: 100.0%"));
         assert!(body.contains("All patch lines are covered!"));
         assert!(body.contains("85.0%"));
+        assert!(body.contains("[covrs](https://github.com/scttnlsn/covrs)"));
         assert!(body.contains("abc1234"));
     }
 
