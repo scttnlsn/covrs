@@ -24,6 +24,34 @@ jobs:
       - name: Run CI checks
         run: bash scripts/ci.sh
 
+  fuzz:
+    needs: ci
+    name: Fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/fuzz -> target
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Fuzz lcov parser
+        run: cargo fuzz run fuzz_lcov -- -max_total_time=10
+        working-directory: tests/fuzz
+
+      - name: Fuzz cobertura parser
+        run: cargo fuzz run fuzz_cobertura -- -max_total_time=10
+        working-directory: tests/fuzz
+
+      - name: Fuzz diff parser
+        run: cargo fuzz run fuzz_diff -- -max_total_time=10
+        working-directory: tests/fuzz
+
   coverage:
     if: github.event_name == 'pull_request'
     needs: ci

@@ -1,0 +1,39 @@
+[package]
+name = "covrs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.covrs]
+path = "../.."
+
+# Compile with optimizations + debug info for better fuzzing throughput
+[profile.release]
+debug = true
+
+[[bin]]
+name = "fuzz_lcov"
+path = "fuzz_targets/fuzz_lcov.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_cobertura"
+path = "fuzz_targets/fuzz_cobertura.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_diff"
+path = "fuzz_targets/fuzz_diff.rs"
+test = false
+doc = false
+bench = false

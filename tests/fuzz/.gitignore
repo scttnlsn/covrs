@@ -1,0 +1,7 @@
+target
+corpus
+artifacts
+coverage
+
+# Seed corpora are tracked (see fuzz/seed_corpus/)
+!seed_corpus/

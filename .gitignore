@@ -1,2 +1,3 @@
 /target
 .covrs.db
+tests/fuzz/seed_corpus/fuzz_*/[0-9a-f][0-9a-f]*

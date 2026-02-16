@@ -1,0 +1,10 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index abc1234..def5678 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ fn hello() {
+-}
+\ No newline at end of file
++    println!("world");
++}
