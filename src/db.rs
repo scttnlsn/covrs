@@ -208,7 +208,8 @@ pub fn diff_coverage_detail(
             |row| row.get(0),
         ) {
             Ok(id) => id,
-            Err(_) => continue,
+            Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+            Err(e) => return Err(e.into()),
         };
 
         if lines.is_empty() {
