@@ -205,11 +205,18 @@ pub fn build_report(
 }
 
 /// Format line numbers into compact range notation, e.g. "1, 3-5, 8".
+///
+/// The input slice must be sorted in ascending order.
 #[must_use]
 pub fn format_line_ranges(lines: &[u32]) -> String {
     if lines.is_empty() {
         return String::new();
     }
+
+    debug_assert!(
+        lines.windows(2).all(|w| w[0] < w[1]),
+        "format_line_ranges requires sorted, deduplicated input"
+    );
 
     let mut ranges: Vec<String> = Vec::new();
     let mut start = lines[0];
