@@ -31,7 +31,10 @@ end_of_record\n";
     let diff_text = include_str!("fixtures/diffs/modified_file.diff");
     let diff_lines = covrs::diff::parse_diff(diff_text);
 
-    let (covered, total) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+    let (covered, total) = {
+        let (_, c, t) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+        (c, t)
+    };
     // Line 11: hit_count=0 (not covered), line 12: hit_count=1 (covered), line 14: hit_count=0
     assert_eq!(total, 3);
     assert_eq!(covered, 1);
@@ -50,7 +53,10 @@ fn diff_coverage_ignores_non_instrumentable_lines() {
     let mut diff_lines = std::collections::HashMap::new();
     diff_lines.insert("src/main.rs".to_string(), vec![2, 3, 4, 10]);
 
-    let (covered, total) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+    let (covered, total) = {
+        let (_, c, t) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+        (c, t)
+    };
     // Lines 2 (hit=0), 3 (hit=1), 4 (hit=0) are instrumentable. Line 10 is not.
     assert_eq!(total, 3);
     assert_eq!(covered, 1);
@@ -68,7 +74,10 @@ fn diff_coverage_single_report() {
     let mut diff_lines = std::collections::HashMap::new();
     diff_lines.insert("src/main.rs".to_string(), vec![2, 3, 4, 10]);
 
-    let (covered, total) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+    let (covered, total) = {
+        let (_, c, t) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+        (c, t)
+    };
     // Same result: lines 2 (hit=0), 3 (hit=1), 4 (hit=0) instrumentable, 10 not in data
     assert_eq!(total, 3);
     assert_eq!(covered, 1);
@@ -93,7 +102,10 @@ fn diff_coverage_multiple_reports() {
     let mut diff_lines = std::collections::HashMap::new();
     diff_lines.insert("src/main.rs".to_string(), vec![1, 2, 3]);
 
-    let (covered, total) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+    let (covered, total) = {
+        let (_, c, t) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+        (c, t)
+    };
     // MAX across reports: line 1 -> max(1,0)=1, line 2 -> max(0,1)=1, line 3 -> max(1,0)=1
     assert_eq!(total, 3);
     assert_eq!(covered, 3);
@@ -120,7 +132,10 @@ fn diff_coverage_multiple_files() {
     diff_lines.insert("src/file1.rs".to_string(), vec![1, 2]);
     diff_lines.insert("src/file2.rs".to_string(), vec![1, 2]);
 
-    let (covered, total) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+    let (covered, total) = {
+        let (_, c, t) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+        (c, t)
+    };
     // file1: line 1 -> max(1,0)=1, line 2 -> max(0,0)=0
     // file2: line 1 -> max(0,1)=1, line 2 -> max(0,1)=1
     assert_eq!(total, 4);
@@ -139,7 +154,10 @@ fn diff_coverage_unknown_file() {
     let mut diff_lines = std::collections::HashMap::new();
     diff_lines.insert("src/other.rs".to_string(), vec![1, 2, 3]);
 
-    let (covered, total) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+    let (covered, total) = {
+        let (_, c, t) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+        (c, t)
+    };
     assert_eq!(total, 0);
     assert_eq!(covered, 0);
 }
@@ -155,7 +173,10 @@ fn diff_coverage_empty_diff() {
 
     let diff_lines = std::collections::HashMap::new();
 
-    let (covered, total) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+    let (covered, total) = {
+        let (_, c, t) = covrs::db::diff_coverage(&conn, &diff_lines).unwrap();
+        (c, t)
+    };
     assert_eq!(total, 0);
     assert_eq!(covered, 0);
 }

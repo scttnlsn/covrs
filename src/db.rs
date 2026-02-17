@@ -193,7 +193,7 @@ pub fn list_reports(conn: &Connection) -> Result<Vec<ReportInfo>> {
 ///
 /// Returns a vec of per-file results (only files that have at least one
 /// instrumentable diff line), plus (total_covered, total_instrumentable).
-pub fn diff_coverage_detail(
+pub fn diff_coverage(
     conn: &Connection,
     diff_lines: &HashMap<String, Vec<u32>>,
 ) -> Result<(Vec<FileDiffCoverage>, usize, usize)> {
@@ -401,14 +401,4 @@ pub fn get_lines(conn: &Connection, source_path: &str) -> Result<Vec<LineDetail>
     })?;
 
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
-}
-
-/// Compute coverage for diff lines across all reports (union semantics).
-/// Returns (covered, total) for only instrumentable diff lines.
-pub fn diff_coverage(
-    conn: &Connection,
-    diff_lines: &HashMap<String, Vec<u32>>,
-) -> Result<(usize, usize)> {
-    let (_, covered, total) = diff_coverage_detail(conn, diff_lines)?;
-    Ok((covered, total))
 }

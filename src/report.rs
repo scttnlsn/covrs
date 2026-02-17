@@ -29,18 +29,6 @@ impl DiffCoverageReport {
     pub fn format(&self, formatter: &dyn ReportFormatter) -> String {
         formatter.format(self)
     }
-
-    /// Format as plain text.
-    #[must_use]
-    pub fn format_text(&self) -> String {
-        self.format(&TextFormatter)
-    }
-
-    /// Format as markdown.
-    #[must_use]
-    pub fn format_markdown(&self) -> String {
-        self.format(&MarkdownFormatter)
-    }
 }
 
 /// Trait for formatting diff coverage reports.
@@ -193,7 +181,7 @@ pub fn build_report(
     let (files, total_covered, total_instrumentable) = if diff_lines.is_empty() {
         (vec![], 0, 0)
     } else {
-        crate::db::diff_coverage_detail(conn, diff_lines)?
+        crate::db::diff_coverage(conn, diff_lines)?
     };
 
     let total_rate = match crate::db::get_summary(conn) {
@@ -285,7 +273,7 @@ mod tests {
             total_rate: Some(0.85),
             sha: Some("abc1234def".to_string()),
         };
-        let body = report.format_markdown();
+        let body = report.format(&MarkdownFormatter);
         assert!(body.contains("Diff Coverage: 100.0%"));
         assert!(body.contains("All diff lines are covered!"));
         assert!(body.contains("85.0%"));
@@ -308,7 +296,7 @@ mod tests {
             total_rate: None,
             sha: None,
         };
-        let body = report.format_markdown();
+        let body = report.format(&MarkdownFormatter);
         assert!(body.contains("60.0%"));
         assert!(body.contains("src/foo.rs"));
         assert!(body.contains("5-6"));
