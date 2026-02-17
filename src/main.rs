@@ -117,17 +117,13 @@ fn main() -> Result<()> {
             overwrite,
             root,
         } => {
-            let root = match root {
-                Some(r) => r,
-                None => std::env::current_dir().context("Failed to determine current directory")?,
-            };
             let out = cli::cmd_ingest(
                 &mut conn,
                 &file,
                 format.as_deref(),
                 name.as_deref(),
                 overwrite,
-                Some(&root),
+                root.as_deref(),
             )?;
             print!("{out}");
         }

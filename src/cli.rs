@@ -6,7 +6,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::ValueEnum;
 use rusqlite::Connection;
 
@@ -38,8 +38,16 @@ pub fn cmd_ingest(
     overwrite: bool,
     root: Option<&Path>,
 ) -> Result<String> {
+    let cwd;
+    let root = match root {
+        Some(r) => r,
+        None => {
+            cwd = std::env::current_dir().context("Failed to determine current directory")?;
+            &cwd
+        }
+    };
     let (report_id, detected_format, actual_name) =
-        crate::ingest::ingest(conn, file, format, name, overwrite, root)?;
+        crate::ingest::ingest(conn, file, format, name, overwrite, Some(root))?;
     Ok(format!(
         "Ingested {} as format '{}' → report id {} (name: '{}')\n",
         file.display(),
