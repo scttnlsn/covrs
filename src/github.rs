@@ -86,10 +86,12 @@ fn pr_number_from_ref() -> Option<u64> {
 
 fn fetch_pr_diff(token: &str, repo: &str, pr_number: u64) -> Result<String> {
     let url = format!("https://api.github.com/repos/{repo}/pulls/{pr_number}");
-    let resp = github_request("GET", &url, token)
-        .set("Accept", "application/vnd.github.v3.diff")
-        .call()
-        .context("Failed to fetch PR diff from GitHub")?;
+    let resp = check_response(
+        github_request("GET", &url, token)
+            .set("Accept", "application/vnd.github.v3.diff")
+            .call(),
+        "fetching PR diff",
+    )?;
     resp.into_string()
         .context("Failed to read PR diff response body")
 }
