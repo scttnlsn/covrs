@@ -11,6 +11,9 @@ inputs:
   db:
     description: "Path to the covrs SQLite database"
     default: ".covrs.db"
+  root:
+    description: "Project root for making coverage paths relative (default: current working directory)"
+    required: false
   path-prefix:
     description: "Path prefix to prepend to diff file paths for matching against coverage data"
     required: false
@@ -73,9 +76,15 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        INGEST_ARGS=()
+        if [ -n "${{ inputs.root }}" ]; then
+          INGEST_ARGS+=(--root "${{ inputs.root }}")
+        fi
+
         for file in ${{ inputs.coverage-files }}; do
           echo "Ingesting: $file"
-          covrs --db "${{ inputs.db }}" ingest "$file"
+          covrs --db "${{ inputs.db }}" ingest "$file" "${INGEST_ARGS[@]}"
         done
 
     - name: Post coverage comment

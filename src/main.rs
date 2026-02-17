@@ -36,6 +36,12 @@ enum Commands {
         /// Overwrite existing report with the same name.
         #[arg(long)]
         overwrite: bool,
+
+        /// Project root for making coverage paths relative.
+        /// Absolute paths from coverage files are stripped to be relative
+        /// to this directory. Defaults to the current working directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
 
     /// Show a coverage summary across all reports.
@@ -109,6 +115,7 @@ fn main() -> Result<()> {
             format,
             name,
             overwrite,
+            root,
         } => {
             let out = cli::cmd_ingest(
                 &mut conn,
@@ -116,6 +123,7 @@ fn main() -> Result<()> {
                 format.as_deref(),
                 name.as_deref(),
                 overwrite,
+                root.as_deref(),
             )?;
             print!("{out}");
         }

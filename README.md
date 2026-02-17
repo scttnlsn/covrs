@@ -46,6 +46,12 @@ covrs ingest coverage.xml --format cobertura --name my-report
 
 The format is auto-detected from the file extension and content. Use `--name` to assign a human-readable report name (defaults to the filename). Use `--overwrite` to replace an existing report with the same name.
 
+Absolute paths from coverage files (e.g., `/home/user/project/src/main.rs`) are automatically made relative to the current working directory during ingestion. Use `--root` to specify a different project root:
+
+```
+covrs ingest coverage.info --root /path/to/project
+```
+
 Ingesting multiple files builds up a combined view — all queries automatically union coverage across every report in the database. A line is considered covered if *any* report has a hit for it.
 
 ### List reports
@@ -112,7 +118,7 @@ covrs diff-coverage --git-diff "main..HEAD"
 # From stdin
 git diff main | covrs diff-coverage
 
-# With a path prefix (if coverage paths don't match repo paths)
+# With a path prefix (if coverage paths use a different relative root)
 covrs diff-coverage --git-diff "HEAD~1" --path-prefix src
 ```
 
@@ -168,6 +174,7 @@ the pull request:
 | `token`          | GitHub token for API access                      | `${{ github.token }}` |
 | `coverage-files` | Coverage file(s) to ingest (space or newline separated) | *required* |
 | `db`             | Path to the covrs SQLite database                | `.covrs.db` |
+| `root`           | Project root for making coverage paths relative  | current directory |
 | `path-prefix`    | Prefix to prepend to diff paths for matching     |             |
 | `version`        | covrs version to install (e.g. `0.1.0`)          | latest release |
 
