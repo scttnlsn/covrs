@@ -36,9 +36,10 @@ pub fn cmd_ingest(
     format: Option<&str>,
     name: Option<&str>,
     overwrite: bool,
+    root: Option<&Path>,
 ) -> Result<String> {
     let (report_id, detected_format, actual_name) =
-        crate::ingest::ingest(conn, file, format, name, overwrite)?;
+        crate::ingest::ingest(conn, file, format, name, overwrite, root)?;
     Ok(format!(
         "Ingested {} as format '{}' → report id {} (name: '{}')\n",
         file.display(),
@@ -460,7 +461,7 @@ diff --git a/app.rs b/app.rs
         let lcov_path = dir.path().join("test.lcov");
         std::fs::write(&lcov_path, "SF:src/foo.rs\nDA:1,5\nDA:2,0\nend_of_record\n").unwrap();
 
-        let out = cmd_ingest(&mut conn, &lcov_path, None, Some("my-report"), false).unwrap();
+        let out = cmd_ingest(&mut conn, &lcov_path, None, Some("my-report"), false, None).unwrap();
 
         assert!(out.contains("Ingested"));
         assert!(out.contains("lcov"));
