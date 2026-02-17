@@ -76,4 +76,3 @@ jobs:
         uses: ./
         with:
           coverage-files: coverage.lcov
-          path-prefix: ${{ github.workspace }}
