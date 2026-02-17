@@ -100,10 +100,10 @@ $COVRS --db "$DB" files  --sort-by-coverage
 
 header "Diff coverage (text)"
 # This may fail if there's no git history, so don't bail
-$COVRS --db "$DB" diff-coverage --git-diff "HEAD~1" --path-prefix "$PROJECT_DIR" || \
+$COVRS --db "$DB" diff-coverage --git-diff "HEAD~1" || \
     echo "  (skipped — not enough git history or no changes)"
 header "Diff coverage (markdown)"
-$COVRS --db "$DB" diff-coverage --git-diff "HEAD~1" --path-prefix "$PROJECT_DIR" --style markdown || \
+$COVRS --db "$DB" diff-coverage --git-diff "HEAD~1" --style markdown || \
     echo "  (skipped — not enough git history or no changes)"
 
 # ── Summary ─────────────────────────────────────────────────────────────────
