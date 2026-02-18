@@ -223,9 +223,9 @@ pub fn diff_coverage(
         for chunk in lines.chunks(BATCH_SIZE) {
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
-                "SELECT line_number, MAX(hit_count) FROM line_coverage \
-                 WHERE source_file_id = ? AND line_number IN ({placeholders}) \
-                 GROUP BY line_number"
+                r#"SELECT line_number, MAX(hit_count) FROM line_coverage
+                 WHERE source_file_id = ? AND line_number IN ({placeholders})
+                 GROUP BY line_number"#
             );
             let mut stmt = conn.prepare(&sql)?;
 

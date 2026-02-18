@@ -26,14 +26,13 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use anyhow::Result;
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::reader::Reader;
+use quick_xml::events::Event;
 use regex::Regex;
 
 /// Pre-compiled regex for condition-coverage attributes like "75% (3/4)".
 static BRANCH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\((\d+)/(\d+)\)").unwrap());
 
-use super::{CoverageParser, Format};
+use super::{get_attr, CoverageParser, Format};
 use crate::model::*;
 
 /// Cobertura XML format parser.
@@ -45,11 +44,8 @@ impl CoverageParser for CoberturaParser {
     }
 
     fn can_parse(&self, _path: &Path, content: &[u8]) -> bool {
-        let head_len = content.len().min(4096);
-        let head = String::from_utf8_lossy(&content[..head_len]);
-
-        // XML with a <coverage element
-        (head.contains("<?xml") || head.trim_start().starts_with('<')) && head.contains("<coverage")
+        let head = super::sniff_head(content);
+        super::looks_like_xml(&head) && head.contains("<coverage")
     }
 
     fn parse(&self, input: &[u8]) -> Result<CoverageData> {
@@ -59,8 +55,7 @@ impl CoverageParser for CoberturaParser {
 
 /// Parse Cobertura XML coverage data from raw bytes.
 pub fn parse(input: &[u8]) -> Result<CoverageData> {
-    let mut reader = Reader::from_reader(input);
-    reader.trim_text(true);
+    let mut reader = super::xml_reader(input);
 
     let mut data = CoverageData::new();
     let mut buf = Vec::new();
@@ -84,11 +79,7 @@ pub fn parse(input: &[u8]) -> Result<CoverageData> {
         let event = reader.read_event_into(&mut buf);
         let is_start_event = matches!(&event, Ok(Event::Start(_)));
         match event {
-            Err(e) => {
-                let pos = reader.buffer_position();
-                return Err(e)
-                    .map_err(|e| anyhow::anyhow!("XML parse error at position {pos}: {e}"));
-            }
+            Err(e) => return Err(super::xml_err(e, &reader)),
             Ok(Event::Eof) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 match e.name().as_ref() {
@@ -285,12 +276,6 @@ fn resolve_source_path(filename: &str, sources: &[String]) -> String {
         }
     }
     filename.to_string()
-}
-
-/// Extract a single attribute value from an XML element.
-fn get_attr(e: &BytesStart<'_>, name: &[u8]) -> Option<String> {
-    let attr = e.try_get_attribute(name).ok()??;
-    attr.unescape_value().ok().map(|v| v.into_owned())
 }
 
 #[cfg(test)]
