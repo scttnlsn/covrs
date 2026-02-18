@@ -5,9 +5,10 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
-use crate::model::{FileDiffCoverage, FileSummary, LineDetail, ReportInfo, ReportSummary};
-
-use crate::model::CoverageData;
+use crate::model::{
+    CoverageData, FileCoverage, FileDiffCoverage, FileSummary, LineDetail, ReportInfo,
+    ReportSummary,
+};
 
 const SCHEMA: &str = include_str!("../schema.sql");
 
@@ -39,13 +40,34 @@ pub fn insert_coverage(
     data: &CoverageData,
     overwrite: bool,
 ) -> Result<i64> {
+    insert_coverage_streaming(conn, name, source_format, source_file, overwrite, |emit| {
+        for file in &data.files {
+            emit(file)?;
+        }
+        Ok(())
+    })
+}
+
+/// Streaming variant of [`insert_coverage`]. Instead of taking a finished
+/// `CoverageData`, accepts a closure that receives an `emit` callback.
+/// The closure should call `emit` once per source file. This lets callers
+/// pipe parsed files directly into the database without collecting them
+/// all into memory first.
+pub fn insert_coverage_streaming(
+    conn: &mut Connection,
+    name: &str,
+    source_format: &str,
+    source_file: Option<&str>,
+    overwrite: bool,
+    with_files: impl FnOnce(&mut dyn FnMut(&FileCoverage) -> Result<()>) -> Result<()>,
+) -> Result<i64> {
     let tx = conn.transaction()?;
 
     if overwrite {
         tx.execute("DELETE FROM report WHERE name = ?1", params![name])?;
     }
 
-    let report_id = insert_coverage_tx(&tx, name, source_format, source_file, data)?;
+    let report_id = insert_coverage_tx(&tx, name, source_format, source_file, with_files)?;
 
     if overwrite {
         // Clean up source files orphaned by the delete
@@ -132,12 +154,53 @@ impl<'a> BatchInsert<'a> {
     }
 }
 
+fn insert_file_coverage(
+    file_cov: &FileCoverage,
+    report_id: i64,
+    file_id: i64,
+    lines: &mut BatchInsert<'_>,
+    branches: &mut BatchInsert<'_>,
+    functions: &mut BatchInsert<'_>,
+) -> Result<()> {
+    for line in &file_cov.lines {
+        lines.push(report_id)?;
+        lines.push(file_id)?;
+        lines.push(line.line_number as i64)?;
+        lines.push(line.hit_count as i64)?;
+    }
+
+    for branch in &file_cov.branches {
+        branches.push(report_id)?;
+        branches.push(file_id)?;
+        branches.push(branch.line_number as i64)?;
+        branches.push(branch.branch_index as i64)?;
+        branches.push(branch.hit_count as i64)?;
+    }
+
+    for func in &file_cov.functions {
+        functions.push(report_id)?;
+        functions.push(file_id)?;
+        functions.push(func.name.clone())?;
+        functions.push(match func.start_line {
+            Some(v) => rusqlite::types::Value::Integer(v as i64),
+            None => rusqlite::types::Value::Null,
+        })?;
+        functions.push(match func.end_line {
+            Some(v) => rusqlite::types::Value::Integer(v as i64),
+            None => rusqlite::types::Value::Null,
+        })?;
+        functions.push(func.hit_count as i64)?;
+    }
+
+    Ok(())
+}
+
 fn insert_coverage_tx(
     tx: &Transaction,
     name: &str,
     source_format: &str,
     source_file: Option<&str>,
-    data: &CoverageData,
+    with_files: impl FnOnce(&mut dyn FnMut(&FileCoverage) -> Result<()>) -> Result<()>,
 ) -> Result<i64> {
     let now = Utc::now().to_rfc3339();
 
@@ -157,7 +220,7 @@ fn insert_coverage_tx(
     })?;
     let report_id = tx.last_insert_rowid();
 
-    let mut file_id_cache: HashMap<&str, i64> = HashMap::new();
+    let mut file_id_cache: HashMap<String, i64> = HashMap::new();
 
     let mut lines = BatchInsert::new(
         tx,
@@ -179,39 +242,17 @@ fn insert_coverage_tx(
         6,
     );
 
-    for file_cov in &data.files {
-        let file_id = get_or_insert_source_file(tx, &file_cov.path, &mut file_id_cache)?;
-
-        for line in &file_cov.lines {
-            lines.push(report_id)?;
-            lines.push(file_id)?;
-            lines.push(line.line_number as i64)?;
-            lines.push(line.hit_count as i64)?;
-        }
-
-        for branch in &file_cov.branches {
-            branches.push(report_id)?;
-            branches.push(file_id)?;
-            branches.push(branch.line_number as i64)?;
-            branches.push(branch.branch_index as i64)?;
-            branches.push(branch.hit_count as i64)?;
-        }
-
-        for func in &file_cov.functions {
-            functions.push(report_id)?;
-            functions.push(file_id)?;
-            functions.push(func.name.clone())?;
-            functions.push(match func.start_line {
-                Some(v) => rusqlite::types::Value::Integer(v as i64),
-                None => rusqlite::types::Value::Null,
-            })?;
-            functions.push(match func.end_line {
-                Some(v) => rusqlite::types::Value::Integer(v as i64),
-                None => rusqlite::types::Value::Null,
-            })?;
-            functions.push(func.hit_count as i64)?;
-        }
-    }
+    with_files(&mut |file_cov: &FileCoverage| {
+        let file_id = get_or_insert_source_file_owned(tx, &file_cov.path, &mut file_id_cache)?;
+        insert_file_coverage(
+            file_cov,
+            report_id,
+            file_id,
+            &mut lines,
+            &mut branches,
+            &mut functions,
+        )
+    })?;
 
     lines.flush()?;
     branches.flush()?;
@@ -234,10 +275,10 @@ fn multi_row_values(rows: usize, cols: usize) -> String {
     out
 }
 
-fn get_or_insert_source_file<'a>(
+fn get_or_insert_source_file_owned(
     tx: &Transaction,
-    path: &'a str,
-    cache: &mut HashMap<&'a str, i64>,
+    path: &str,
+    cache: &mut HashMap<String, i64>,
 ) -> Result<i64> {
     if let Some(&id) = cache.get(path) {
         return Ok(id);
@@ -249,7 +290,7 @@ fn get_or_insert_source_file<'a>(
         params![path],
         |row| row.get(0),
     )?;
-    cache.insert(path, id);
+    cache.insert(path.to_owned(), id);
     Ok(id)
 }
 

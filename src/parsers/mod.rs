@@ -2,13 +2,14 @@ pub mod cobertura;
 pub mod jacoco;
 pub mod lcov;
 
+use std::io::BufRead;
 use std::path::Path;
 
 use anyhow::Result;
 use quick_xml::events::BytesStart;
 use quick_xml::reader::Reader;
 
-use crate::model::CoverageData;
+use crate::model::FileCoverage;
 
 /// Parser for a specific coverage format.
 pub trait CoverageParser {
@@ -20,8 +21,13 @@ pub trait CoverageParser {
     /// and/or the first few KB of content.
     fn can_parse(&self, path: &Path, content: &[u8]) -> bool;
 
-    /// Parse coverage data from raw bytes.
-    fn parse(&self, input: &[u8]) -> Result<CoverageData>;
+    /// Streaming parse from a buffered reader: calls `emit` once per source
+    /// file instead of collecting everything into a single `CoverageData`.
+    fn parse_streaming(
+        &self,
+        reader: &mut dyn BufRead,
+        emit: &mut dyn FnMut(FileCoverage) -> Result<()>,
+    ) -> Result<()>;
 }
 
 // ── Shared XML helpers used by cobertura & jacoco parsers ──────────
@@ -43,15 +49,15 @@ pub(crate) fn get_attr(e: &BytesStart<'_>, name: &[u8]) -> Option<String> {
     attr.unescape_value().ok().map(|v| v.into_owned())
 }
 
-/// Create a configured XML reader from raw bytes.
-pub(crate) fn xml_reader(input: &[u8]) -> Reader<&[u8]> {
+/// Create a configured XML reader from a buffered source.
+pub(crate) fn xml_reader<R: BufRead>(input: R) -> Reader<R> {
     let mut reader = Reader::from_reader(input);
     reader.trim_text(true);
     reader
 }
 
 /// Map a quick_xml error to an anyhow error with buffer position context.
-pub(crate) fn xml_err(e: quick_xml::Error, reader: &Reader<&[u8]>) -> anyhow::Error {
+pub(crate) fn xml_err<R>(e: quick_xml::Error, reader: &Reader<R>) -> anyhow::Error {
     let pos = reader.buffer_position();
     anyhow::anyhow!("XML parse error at position {pos}: {e}")
 }
