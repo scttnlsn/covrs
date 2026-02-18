@@ -116,7 +116,7 @@ impl ReportFormatter for MarkdownFormatter {
             report.total_instrumentable as u64,
         ) * 100.0;
 
-        writeln!(md, "## Diff Coverage: {diff_rate:.1}%\n").unwrap();
+        writeln!(md, "### Diff Coverage: {diff_rate:.1}%\n").unwrap();
 
         let covered = report.total_covered;
         let total = report.total_instrumentable;
@@ -151,7 +151,11 @@ impl ReportFormatter for MarkdownFormatter {
 
             for f in &files_with_misses {
                 let path = &f.path;
-                let ranges = format_line_ranges(&f.missed_lines);
+                let ranges = if let Some(ref sha) = report.sha {
+                    format_line_ranges_linked(&f.missed_lines, sha, path)
+                } else {
+                    format_line_ranges(&f.missed_lines)
+                };
                 writeln!(md, "**`{path}`**: {ranges}\n").unwrap();
             }
 
@@ -202,6 +206,52 @@ pub fn build_report(
         total_rate,
         sha: sha.map(|s| s.to_owned()),
     })
+}
+
+/// Format line numbers into compact range notation with markdown links.
+///
+/// Each line number becomes a link like `[N](../blob/{sha}/{path}#LN)`.
+/// Ranges are rendered as `[3](../#L3)-[5](../#L5)`.
+///
+/// The input slice must be sorted in ascending order.
+#[must_use]
+pub fn format_line_ranges_linked(lines: &[u32], sha: &str, path: &str) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    debug_assert!(
+        lines.windows(2).all(|w| w[0] < w[1]),
+        "format_line_ranges_linked requires sorted, deduplicated input"
+    );
+
+    let link = |line: u32| -> String { format!("[{line}](../blob/{sha}/{path}#L{line})") };
+
+    let mut ranges: Vec<String> = Vec::new();
+    let mut start = lines[0];
+    let mut end = lines[0];
+
+    for &line in &lines[1..] {
+        if line == end + 1 {
+            end = line;
+        } else {
+            if start == end {
+                ranges.push(link(start));
+            } else {
+                ranges.push(format!("{}-{}", link(start), link(end)));
+            }
+            start = line;
+            end = line;
+        }
+    }
+
+    if start == end {
+        ranges.push(link(start));
+    } else {
+        ranges.push(format!("{}-{}", link(start), link(end)));
+    }
+
+    ranges.join(", ")
 }
 
 /// Format line numbers into compact range notation, e.g. "1, 3-5, 8".
@@ -270,6 +320,35 @@ mod tests {
     }
 
     #[test]
+    fn test_format_line_ranges_linked_empty() {
+        assert_eq!(format_line_ranges_linked(&[], "abc123", "src/foo.rs"), "");
+    }
+
+    #[test]
+    fn test_format_line_ranges_linked_single() {
+        assert_eq!(
+            format_line_ranges_linked(&[5], "abc123", "src/foo.rs"),
+            "[5](../blob/abc123/src/foo.rs#L5)"
+        );
+    }
+
+    #[test]
+    fn test_format_line_ranges_linked_consecutive() {
+        assert_eq!(
+            format_line_ranges_linked(&[1, 2, 3], "abc123", "src/foo.rs"),
+            "[1](../blob/abc123/src/foo.rs#L1)-[3](../blob/abc123/src/foo.rs#L3)"
+        );
+    }
+
+    #[test]
+    fn test_format_line_ranges_linked_mixed() {
+        assert_eq!(
+            format_line_ranges_linked(&[1, 3, 4, 5, 10], "abc123", "src/foo.rs"),
+            "[1](../blob/abc123/src/foo.rs#L1), [3](../blob/abc123/src/foo.rs#L3)-[5](../blob/abc123/src/foo.rs#L5), [10](../blob/abc123/src/foo.rs#L10)"
+        );
+    }
+
+    #[test]
     fn test_format_markdown_all_covered() {
         let report = DiffCoverageReport {
             diff_files: 1,
@@ -308,6 +387,27 @@ mod tests {
         assert!(body.contains("src/foo.rs"));
         assert!(body.contains("5-6"));
         assert!(body.contains("Missed lines"));
+    }
+
+    #[test]
+    fn test_format_markdown_with_misses_linked() {
+        let report = DiffCoverageReport {
+            diff_files: 1,
+            diff_lines: 5,
+            files: vec![FileDiffCoverage {
+                path: "src/foo.rs".to_string(),
+                covered_lines: vec![1, 2, 3],
+                missed_lines: vec![5, 6],
+            }],
+            total_covered: 3,
+            total_instrumentable: 5,
+            total_rate: None,
+            sha: Some("abc1234def".to_string()),
+        };
+        let body = report.format(&MarkdownFormatter);
+        assert!(body.contains(
+            "[5](../blob/abc1234def/src/foo.rs#L5)-[6](../blob/abc1234def/src/foo.rs#L6)"
+        ));
     }
 
     #[test]
