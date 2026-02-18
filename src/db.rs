@@ -18,6 +18,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
     conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
     conn.execute_batch("PRAGMA busy_timeout=5000;")?;
+    conn.execute_batch("PRAGMA cache_size=-65536;")?; // 64 MB page cache
     Ok(conn)
 }
 
@@ -64,6 +65,73 @@ pub fn insert_coverage(
     Ok(report_id)
 }
 
+/// Maximum rows per multi-row INSERT batch. Kept well under SQLite's
+/// default `SQLITE_MAX_VARIABLE_NUMBER` (32 766 for bundled builds).
+/// 2 000 rows × 6 params (the widest statement) = 12 000 parameters.
+const INSERT_BATCH_SIZE: usize = 2000;
+
+/// Accumulates parameter values and flushes them as batched multi-row
+/// INSERT statements to reduce per-row overhead.
+struct BatchInsert<'a> {
+    tx: &'a Transaction<'a>,
+    /// SQL prefix, e.g. `INSERT OR REPLACE INTO t (a, b) VALUES`.
+    prefix: &'static str,
+    /// Optional SQL suffix appended after the VALUES clause (e.g. ON CONFLICT).
+    suffix: &'static str,
+    /// Number of columns per row.
+    cols: usize,
+    /// Flat list of parameter values for the current batch.
+    params: Vec<rusqlite::types::Value>,
+    /// Number of complete rows in the current batch.
+    rows: usize,
+}
+
+impl<'a> BatchInsert<'a> {
+    fn new(
+        tx: &'a Transaction<'a>,
+        prefix: &'static str,
+        suffix: &'static str,
+        cols: usize,
+    ) -> Self {
+        Self {
+            tx,
+            prefix,
+            suffix,
+            cols,
+            params: Vec::with_capacity(INSERT_BATCH_SIZE * cols),
+            rows: 0,
+        }
+    }
+
+    /// Push one parameter value. After every `cols` pushes a row is
+    /// complete; the batch is flushed automatically when full.
+    fn push(&mut self, value: impl Into<rusqlite::types::Value>) -> Result<()> {
+        self.params.push(value.into());
+        if self.params.len().is_multiple_of(self.cols) {
+            self.rows += 1;
+            if self.rows >= INSERT_BATCH_SIZE {
+                self.flush()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Flush any remaining rows. Must be called after the last `push`.
+    fn flush(&mut self) -> Result<()> {
+        if self.rows == 0 {
+            return Ok(());
+        }
+        debug_assert_eq!(self.params.len(), self.rows * self.cols);
+        let values_clause = multi_row_values(self.rows, self.cols);
+        let sql = format!("{} {values_clause}{}", self.prefix, self.suffix);
+        self.tx
+            .execute(&sql, rusqlite::params_from_iter(self.params.iter()))?;
+        self.params.clear();
+        self.rows = 0;
+        Ok(())
+    }
+}
+
 fn insert_coverage_tx(
     tx: &Transaction,
     name: &str,
@@ -89,67 +157,81 @@ fn insert_coverage_tx(
     })?;
     let report_id = tx.last_insert_rowid();
 
-    // Cache source_file path -> id mappings
     let mut file_id_cache: HashMap<&str, i64> = HashMap::new();
+
+    let mut lines = BatchInsert::new(
+        tx,
+        "INSERT OR REPLACE INTO line_coverage (report_id, source_file_id, line_number, hit_count) VALUES",
+        "",
+        4,
+    );
+    let mut branches = BatchInsert::new(
+        tx,
+        "INSERT OR REPLACE INTO branch_coverage (report_id, source_file_id, line_number, branch_index, hit_count) VALUES",
+        "",
+        5,
+    );
+    let mut functions = BatchInsert::new(
+        tx,
+        "INSERT INTO function_coverage (report_id, source_file_id, name, start_line, end_line, hit_count) VALUES",
+        " ON CONFLICT(report_id, source_file_id, name, COALESCE(start_line, -1)) \
+         DO UPDATE SET hit_count = excluded.hit_count, end_line = excluded.end_line",
+        6,
+    );
 
     for file_cov in &data.files {
         let file_id = get_or_insert_source_file(tx, &file_cov.path, &mut file_id_cache)?;
 
-        // Line coverage
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO line_coverage (report_id, source_file_id, line_number, hit_count) \
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for line in &file_cov.lines {
-                stmt.execute(params![
-                    report_id,
-                    file_id,
-                    line.line_number,
-                    line.hit_count
-                ])?;
-            }
+        for line in &file_cov.lines {
+            lines.push(report_id)?;
+            lines.push(file_id)?;
+            lines.push(line.line_number as i64)?;
+            lines.push(line.hit_count as i64)?;
         }
 
-        // Branch coverage
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO branch_coverage (report_id, source_file_id, line_number, branch_index, hit_count) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for branch in &file_cov.branches {
-                stmt.execute(params![
-                    report_id,
-                    file_id,
-                    branch.line_number,
-                    branch.branch_index,
-                    branch.hit_count,
-                ])?;
-            }
+        for branch in &file_cov.branches {
+            branches.push(report_id)?;
+            branches.push(file_id)?;
+            branches.push(branch.line_number as i64)?;
+            branches.push(branch.branch_index as i64)?;
+            branches.push(branch.hit_count as i64)?;
         }
 
-        // Function coverage — use upsert with COALESCE for NULL-safe dedup
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO function_coverage (report_id, source_file_id, name, start_line, end_line, hit_count) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(report_id, source_file_id, name, COALESCE(start_line, -1)) \
-                 DO UPDATE SET hit_count = excluded.hit_count, end_line = excluded.end_line",
-            )?;
-            for func in &file_cov.functions {
-                stmt.execute(params![
-                    report_id,
-                    file_id,
-                    func.name,
-                    func.start_line,
-                    func.end_line,
-                    func.hit_count,
-                ])?;
-            }
+        for func in &file_cov.functions {
+            functions.push(report_id)?;
+            functions.push(file_id)?;
+            functions.push(func.name.clone())?;
+            functions.push(match func.start_line {
+                Some(v) => rusqlite::types::Value::Integer(v as i64),
+                None => rusqlite::types::Value::Null,
+            })?;
+            functions.push(match func.end_line {
+                Some(v) => rusqlite::types::Value::Integer(v as i64),
+                None => rusqlite::types::Value::Null,
+            })?;
+            functions.push(func.hit_count as i64)?;
         }
     }
 
+    lines.flush()?;
+    branches.flush()?;
+    functions.flush()?;
+
     Ok(report_id)
+}
+
+/// Generate a VALUES clause like `(?,?,?),(?,?,?),...` for `rows` rows of
+/// `cols` columns each, using positional (`?`) placeholders.
+fn multi_row_values(rows: usize, cols: usize) -> String {
+    let single = format!("({})", vec!["?"; cols].join(","));
+    let mut out = String::with_capacity((single.len() + 1) * rows);
+    for i in 0..rows {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&single);
+    }
+    out
 }
 
 fn get_or_insert_source_file<'a>(
