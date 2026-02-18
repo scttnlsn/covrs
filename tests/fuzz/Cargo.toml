@@ -37,3 +37,10 @@ path = "fuzz_targets/fuzz_diff.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_jacoco"
+path = "fuzz_targets/fuzz_jacoco.rs"
+test = false
+doc = false
+bench = false

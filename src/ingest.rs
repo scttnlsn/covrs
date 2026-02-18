@@ -14,7 +14,7 @@ use crate::parsers::{self, Format};
 pub fn normalize_paths(data: &mut CoverageData, root: &Path) {
     for file in &mut data.files {
         let path = Path::new(&file.path);
-        if path.is_absolute() {
+        if path.is_absolute() && path.starts_with(root) {
             if let Ok(relative) = path.strip_prefix(root) {
                 file.path = relative.to_string_lossy().into_owned();
             }

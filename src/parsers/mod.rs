@@ -1,9 +1,12 @@
 pub mod cobertura;
+pub mod jacoco;
 pub mod lcov;
 
 use std::path::Path;
 
 use anyhow::Result;
+use quick_xml::events::BytesStart;
+use quick_xml::reader::Reader;
 
 use crate::model::CoverageData;
 
@@ -21,10 +24,43 @@ pub trait CoverageParser {
     fn parse(&self, input: &[u8]) -> Result<CoverageData>;
 }
 
+// ── Shared XML helpers used by cobertura & jacoco parsers ──────────
+
+/// Peek at the first 4 KiB of content as a string for format detection.
+pub(crate) fn sniff_head(content: &[u8]) -> std::borrow::Cow<'_, str> {
+    let n = content.len().min(4096);
+    String::from_utf8_lossy(&content[..n])
+}
+
+/// Whether the given text snippet looks like XML.
+pub(crate) fn looks_like_xml(head: &str) -> bool {
+    head.contains("<?xml") || head.trim_start().starts_with('<')
+}
+
+/// Extract a single attribute value from an XML element.
+pub(crate) fn get_attr(e: &BytesStart<'_>, name: &[u8]) -> Option<String> {
+    let attr = e.try_get_attribute(name).ok()??;
+    attr.unescape_value().ok().map(|v| v.into_owned())
+}
+
+/// Create a configured XML reader from raw bytes.
+pub(crate) fn xml_reader(input: &[u8]) -> Reader<&[u8]> {
+    let mut reader = Reader::from_reader(input);
+    reader.trim_text(true);
+    reader
+}
+
+/// Map a quick_xml error to an anyhow error with buffer position context.
+pub(crate) fn xml_err(e: quick_xml::Error, reader: &Reader<&[u8]>) -> anyhow::Error {
+    let pos = reader.buffer_position();
+    anyhow::anyhow!("XML parse error at position {pos}: {e}")
+}
+
 /// Supported coverage formats, used for the `--format` CLI override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Cobertura,
+    Jacoco,
     Lcov,
 }
 
@@ -32,6 +68,7 @@ impl std::fmt::Display for Format {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Format::Cobertura => f.write_str("cobertura"),
+            Format::Jacoco => f.write_str("jacoco"),
             Format::Lcov => f.write_str("lcov"),
         }
     }
@@ -43,9 +80,10 @@ impl std::str::FromStr for Format {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "cobertura" => Ok(Format::Cobertura),
+            "jacoco" => Ok(Format::Jacoco),
             "lcov" => Ok(Format::Lcov),
             _ => Err(anyhow::anyhow!(
-                "Unknown format: '{s}'. Supported: cobertura, lcov"
+                "Unknown format: '{s}'. Supported: cobertura, jacoco, lcov"
             )),
         }
     }
@@ -55,10 +93,13 @@ impl std::str::FromStr for Format {
 ///
 /// LCOV is checked first because its content markers are very specific
 /// (lines starting with `SF:`, `DA:`, etc.) so false positives are unlikely.
-/// Cobertura (XML-based) is checked second since `<coverage` is a broader match.
+/// JaCoCo is checked before Cobertura since both are XML but JaCoCo's
+/// `<report` + `jacoco`/`<package` markers are more specific than
+/// Cobertura's `<coverage`.
 pub fn all() -> Vec<Box<dyn CoverageParser>> {
     vec![
         Box::new(lcov::LcovParser),
+        Box::new(jacoco::JacocoParser),
         Box::new(cobertura::CoberturaParser),
     ]
 }
@@ -72,6 +113,7 @@ pub fn detect(path: &Path, content: &[u8]) -> Option<Box<dyn CoverageParser>> {
 pub fn for_format(format: Format) -> Box<dyn CoverageParser> {
     match format {
         Format::Cobertura => Box::new(cobertura::CoberturaParser),
+        Format::Jacoco => Box::new(jacoco::JacocoParser),
         Format::Lcov => Box::new(lcov::LcovParser),
     }
 }
@@ -94,6 +136,22 @@ mod tests {
         let content = b"TN:test\nSF:/src/lib.rs\nDA:1,5\nend_of_record\n";
         let parser = detect(Path::new("coverage.txt"), content).unwrap();
         assert_eq!(parser.format(), Format::Lcov);
+    }
+
+    #[test]
+    fn test_detect_jacoco_by_content() {
+        let content =
+            b"<?xml version=\"1.0\"?>\n<report name=\"test\"><package name=\"com/example\">";
+        let parser = detect(Path::new("jacoco.xml"), content).unwrap();
+        assert_eq!(parser.format(), Format::Jacoco);
+    }
+
+    #[test]
+    fn test_detect_jacoco_by_doctype() {
+        let content =
+            b"<?xml version=\"1.0\"?><!DOCTYPE report PUBLIC \"-//JACOCO//DTD Report 1.1//EN\" \"report.dtd\"><report name=\"test\">";
+        let parser = detect(Path::new("report.xml"), content).unwrap();
+        assert_eq!(parser.format(), Format::Jacoco);
     }
 
     #[test]
