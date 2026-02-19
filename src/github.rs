@@ -45,7 +45,11 @@ pub struct Context {
 
 impl Context {
     /// Build a context from standard GitHub Actions environment variables
-    /// (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_SHA`).
+    /// (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_REF`).
+    ///
+    /// The commit SHA is resolved by querying the GitHub API for the PR head
+    /// commit rather than using `GITHUB_SHA`, which on `pull_request` events
+    /// points to a temporary merge commit instead of the actual PR head.
     pub fn from_env() -> Result<Self> {
         let token = std::env::var("GITHUB_TOKEN")
             .context("GITHUB_TOKEN environment variable is required")?;
@@ -53,7 +57,12 @@ impl Context {
             .context("GITHUB_REPOSITORY environment variable is required")?;
         let pr_number =
             pr_number_from_ref().context("could not determine PR number from GITHUB_REF")?;
-        let sha = std::env::var("GITHUB_SHA").ok();
+        let sha = fetch_pr_head_sha(&token, &repo, pr_number)
+            .map(Some)
+            .unwrap_or_else(|e| {
+                eprintln!("Warning: could not fetch PR head SHA: {e}");
+                std::env::var("GITHUB_SHA").ok()
+            });
         Ok(Self {
             token,
             repo,
@@ -87,7 +96,7 @@ impl Context {
         let sha = self
             .sha
             .as_deref()
-            .context("GITHUB_SHA is required for check run annotations")?;
+            .context("commit SHA is required for check run annotations")?;
 
         post_check_run(&self.token, &self.repo, sha, annotations)?;
         eprintln!(
@@ -121,6 +130,34 @@ fn fetch_pr_diff(token: &str, repo: &str, pr_number: u64) -> Result<String> {
     )?;
     resp.into_string()
         .context("Failed to read PR diff response body")
+}
+
+#[derive(Deserialize)]
+struct PullRequest {
+    head: PullRequestHead,
+}
+
+#[derive(Deserialize)]
+struct PullRequestHead {
+    sha: String,
+}
+
+/// Fetch the head commit SHA for a pull request from the GitHub API.
+///
+/// On `pull_request` events `GITHUB_SHA` is the merge commit, not the actual
+/// head commit of the PR branch.  This function queries the Pulls API to get
+/// the real head SHA so that check-run annotations and blob permalinks resolve
+/// correctly.
+fn fetch_pr_head_sha(token: &str, repo: &str, pr_number: u64) -> Result<String> {
+    let url = format!("https://api.github.com/repos/{repo}/pulls/{pr_number}");
+    let resp = check_response(
+        github_request("GET", &url, token).call(),
+        "fetching PR head SHA",
+    )?;
+    let pr: PullRequest = resp
+        .into_json()
+        .context("Failed to parse pull request JSON")?;
+    Ok(pr.head.sha)
 }
 
 #[derive(Deserialize)]
