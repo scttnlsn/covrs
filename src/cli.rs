@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use clap::ValueEnum;
 use rusqlite::Connection;
 
+use crate::model::Annotation;
 use crate::report::ReportFormatter;
 use crate::{db, diff, report};
 
@@ -186,16 +187,80 @@ pub fn cmd_diff_coverage(
     style: &Style,
     sha: Option<&str>,
 ) -> Result<String> {
+    let report = build_diff_report(conn, diff_text, path_prefix, sha)?;
+    let formatter = style.formatter();
+
+    Ok(report.format(formatter.as_ref()))
+}
+
+/// Build a [`report::DiffCoverageReport`] without formatting it.
+///
+/// This is useful when the caller needs both the formatted output and
+/// structured data (e.g. for annotations).
+pub fn build_diff_report(
+    conn: &Connection,
+    diff_text: &str,
+    path_prefix: Option<&str>,
+    sha: Option<&str>,
+) -> Result<report::DiffCoverageReport> {
     let mut diff_lines = diff::parse_diff(diff_text);
 
     if let Some(prefix) = path_prefix {
         diff_lines = diff::apply_path_prefix(diff_lines, prefix);
     }
 
-    let report = report::build_report(conn, &diff_lines, sha)?;
-    let formatter = style.formatter();
+    report::build_report(conn, &diff_lines, sha)
+}
 
-    Ok(report.format(formatter.as_ref()))
+/// Build GitHub check-run annotations from a diff coverage report.
+///
+/// Each missed line range becomes a single `warning` annotation. Consecutive
+/// missed lines within the same file are merged into range annotations.
+pub fn build_annotations(report: &report::DiffCoverageReport) -> Vec<Annotation> {
+    let mut annotations = Vec::new();
+
+    for file in &report.files {
+        if file.missed_lines.is_empty() {
+            continue;
+        }
+
+        // Group consecutive missed lines into ranges
+        let mut start = file.missed_lines[0];
+        let mut end = file.missed_lines[0];
+
+        for &line in &file.missed_lines[1..] {
+            if line == end + 1 {
+                end = line;
+            } else {
+                annotations.push(Annotation {
+                    path: file.path.clone(),
+                    start_line: start,
+                    end_line: end,
+                    message: annotation_message(start, end),
+                });
+                start = line;
+                end = line;
+            }
+        }
+
+        annotations.push(Annotation {
+            path: file.path.clone(),
+            start_line: start,
+            end_line: end,
+            message: annotation_message(start, end),
+        });
+    }
+
+    annotations
+}
+
+/// Build a human-readable annotation message for a missed line range.
+fn annotation_message(start: u32, end: u32) -> String {
+    if start == end {
+        format!("Line {start} not covered by tests")
+    } else {
+        format!("Lines {start}-{end} not covered by tests")
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +524,109 @@ diff --git a/app.rs b/app.rs
 
         assert!(out.contains("Diff coverage:"));
         assert!(out.contains("1/2"));
+    }
+
+    #[test]
+    fn test_build_annotations_groups_consecutive_lines() {
+        let mut conn = test_db();
+        seed_coverage(&mut conn);
+
+        // Lines 1,2 are covered (hit_count > 0), lines 3,4 are uncovered
+        let diff_text = "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -0,0 +1,4 @@
++fn main() {
++    let x = 1;
++    let y = 2;
++    let z = 3;
+";
+
+        let report = build_diff_report(&conn, diff_text, None, None).unwrap();
+        let annotations = build_annotations(&report);
+
+        // Lines 3,4 are consecutive missed lines → one annotation
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].path, "src/main.rs");
+        assert_eq!(annotations[0].start_line, 3);
+        assert_eq!(annotations[0].end_line, 4);
+        assert!(annotations[0].message.contains("3-4"));
+    }
+
+    #[test]
+    fn test_build_annotations_non_consecutive_lines() {
+        let mut conn = test_db();
+
+        let data = CoverageData {
+            files: vec![FileCoverage {
+                path: "src/foo.rs".to_string(),
+                lines: vec![
+                    LineCoverage {
+                        line_number: 1,
+                        hit_count: 1,
+                    },
+                    LineCoverage {
+                        line_number: 2,
+                        hit_count: 0,
+                    },
+                    LineCoverage {
+                        line_number: 3,
+                        hit_count: 1,
+                    },
+                    LineCoverage {
+                        line_number: 4,
+                        hit_count: 0,
+                    },
+                ],
+                branches: vec![],
+                functions: vec![],
+            }],
+        };
+        db::insert_coverage(&mut conn, "test", "lcov", None, &data, false).unwrap();
+
+        let diff_text = "\
+diff --git a/src/foo.rs b/src/foo.rs
+--- a/src/foo.rs
++++ b/src/foo.rs
+@@ -0,0 +1,4 @@
++line 1
++line 2
++line 3
++line 4
+";
+
+        let report = build_diff_report(&conn, diff_text, None, None).unwrap();
+        let annotations = build_annotations(&report);
+
+        // Lines 2 and 4 are non-consecutive → two separate annotations
+        assert_eq!(annotations.len(), 2);
+        assert_eq!(annotations[0].start_line, 2);
+        assert_eq!(annotations[0].end_line, 2);
+        assert!(annotations[0].message.contains("Line 2"));
+        assert_eq!(annotations[1].start_line, 4);
+        assert_eq!(annotations[1].end_line, 4);
+    }
+
+    #[test]
+    fn test_build_annotations_empty_when_all_covered() {
+        let mut conn = test_db();
+        seed_coverage(&mut conn);
+
+        // Only lines 1,2 of src/lib.rs which are both covered
+        let diff_text = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -0,0 +1,2 @@
++line 1
++line 2
+";
+
+        let report = build_diff_report(&conn, diff_text, None, None).unwrap();
+        let annotations = build_annotations(&report);
+
+        assert!(annotations.is_empty());
     }
 
     #[test]
