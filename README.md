@@ -189,6 +189,7 @@ the pull request:
   uses: scttnlsn/covrs@v0
   with:
     coverage-files: coverage.lcov
+    annotate: true
 ```
 
 #### Inputs
