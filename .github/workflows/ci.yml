@@ -76,3 +76,4 @@ jobs:
         uses: ./
         with:
           coverage-files: coverage.lcov
+          annotate: true
