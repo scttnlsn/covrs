@@ -1,6 +1,6 @@
 [package]
 name = "covrs"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 description = "Code coverage ingestion and reporting"
 license = "MIT"
