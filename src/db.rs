@@ -129,9 +129,15 @@ impl<'a> BatchInsert<'a> {
     }
 
     /// Append one complete row. Flushes automatically when the batch is full.
-    fn push_row(&mut self, values: &[rusqlite::types::Value]) -> Result<()> {
-        debug_assert_eq!(values.len(), self.cols);
-        self.params.extend_from_slice(values);
+    /// Takes ownership of values to avoid an extra clone.
+    fn push_row<I: IntoIterator<Item = rusqlite::types::Value>>(
+        &mut self,
+        values: I,
+    ) -> Result<()> {
+        let iter = values.into_iter();
+        let (min, _) = iter.size_hint();
+        debug_assert_eq!(min, self.cols, "wrong number of columns");
+        self.params.extend(iter);
         self.rows += 1;
         self.flushed = false;
         if self.rows >= INSERT_BATCH_SIZE {
@@ -224,7 +230,7 @@ fn insert_coverage_tx(
         let fid = rusqlite::types::Value::Integer(file_id);
 
         for line in &file_cov.lines {
-            lines.push_row(&[
+            lines.push_row([
                 rid.clone(),
                 fid.clone(),
                 (line.line_number as i64).into(),
@@ -232,7 +238,7 @@ fn insert_coverage_tx(
             ])?;
         }
         for branch in &file_cov.branches {
-            branches.push_row(&[
+            branches.push_row([
                 rid.clone(),
                 fid.clone(),
                 (branch.line_number as i64).into(),
@@ -241,7 +247,7 @@ fn insert_coverage_tx(
             ])?;
         }
         for func in &file_cov.functions {
-            functions.push_row(&[
+            functions.push_row([
                 rid.clone(),
                 fid.clone(),
                 func.name.clone().into(),
