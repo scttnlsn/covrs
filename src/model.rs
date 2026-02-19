@@ -148,3 +148,16 @@ impl FileDiffCoverage {
         rate(self.covered_lines.len() as u64, self.total() as u64)
     }
 }
+
+/// A single annotation to attach to a GitHub check run.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Annotation {
+    /// Source file path relative to the repo root.
+    pub path: String,
+    /// Start line of the annotation range.
+    pub start_line: u32,
+    /// End line of the annotation range.
+    pub end_line: u32,
+    /// Annotation message.
+    pub message: String,
+}

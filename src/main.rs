@@ -100,6 +100,13 @@ enum Commands {
         /// GITHUB_REPOSITORY, GITHUB_REF, GITHUB_SHA).
         #[arg(long)]
         comment: bool,
+
+        /// Add line annotations to a GitHub check run for uncovered
+        /// lines. Requires the same environment variables as --comment
+        /// (GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_SHA).
+        /// Can be used independently or together with --comment.
+        #[arg(long)]
+        annotate: bool,
     },
 }
 
@@ -141,7 +148,8 @@ fn main() -> Result<()> {
             path_prefix,
             style,
             comment,
-        } => run_diff_coverage(&conn, git_diff, path_prefix, style, comment)?,
+            annotate,
+        } => run_diff_coverage(&conn, git_diff, path_prefix, style, comment, annotate)?,
     }
 
     Ok(())
@@ -154,14 +162,25 @@ fn run_diff_coverage(
     path_prefix: Option<String>,
     style: cli::Style,
     comment: bool,
+    annotate: bool,
 ) -> Result<()> {
-    if comment {
-        // GitHub mode: fetch diff from the API and post results as a PR comment
+    let needs_github = comment || annotate;
+
+    if needs_github {
+        // GitHub mode: fetch diff from the API
         let gh = GitHubDiff::from_env()?;
         let diff_text = gh.fetch_diff()?;
-        let output =
-            cli::cmd_diff_coverage(conn, &diff_text, path_prefix.as_deref(), &style, gh.sha())?;
-        gh.post_comment(&output)?;
+        let report = cli::build_diff_report(conn, &diff_text, path_prefix.as_deref(), gh.sha())?;
+
+        if comment {
+            let output = report.format(style.formatter().as_ref());
+            gh.context.post_comment(&output)?;
+        }
+
+        if annotate {
+            let annotations = cli::build_annotations(&report);
+            gh.context.post_annotations(&annotations)?;
+        }
     } else {
         // Local mode: read diff from git or stdin
         let source: Box<dyn DiffSource> = if let Some(args) = git_diff {

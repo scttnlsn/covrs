@@ -62,7 +62,7 @@ impl DiffSource for GitDiff {
 /// Diff from a GitHub pull request.
 pub struct GitHubDiff {
     /// The resolved GitHub context.
-    context: github::Context,
+    pub context: github::Context,
 }
 
 impl GitHubDiff {
@@ -70,11 +70,6 @@ impl GitHubDiff {
     pub fn from_env() -> Result<Self> {
         let context = github::Context::from_env()?;
         Ok(Self { context })
-    }
-
-    /// Post a comment on the PR.
-    pub fn post_comment(&self, body: &str) -> Result<()> {
-        self.context.post_comment(body)
     }
 }
 

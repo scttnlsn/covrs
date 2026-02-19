@@ -20,6 +20,9 @@ inputs:
   coverage-files:
     description: "Coverage file(s) to ingest before computing diff coverage (space or newline separated)"
     required: true
+  annotate:
+    description: "Add line annotations to a GitHub check run for uncovered lines"
+    default: "false"
   version:
     description: "covrs version to install (e.g. '0.1.0'). Omit to install the latest."
     required: false
@@ -99,6 +102,10 @@ runs:
 
         if [ -n "${{ inputs.path-prefix }}" ]; then
           ARGS+=(--path-prefix "${{ inputs.path-prefix }}")
+        fi
+
+        if [ "${{ inputs.annotate }}" = "true" ]; then
+          ARGS+=(--annotate)
         fi
 
         echo "Running: covrs ${ARGS[*]}"

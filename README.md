@@ -155,6 +155,29 @@ line numbers. All required parameters are read from the standard GitHub
 Actions environment variables (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
 `GITHUB_REF`, `GITHUB_SHA`).
 
+### GitHub line annotations
+
+Add inline annotations to uncovered lines on a pull request using
+`--annotate`:
+
+```
+covrs diff-coverage --annotate
+```
+
+This creates a GitHub check run named "covrs" with warning-level
+annotations on every uncovered line in the diff. The annotations appear
+inline in the "Files changed" tab of the pull request. Can be combined
+with `--comment` to post both a summary comment and line annotations:
+
+```
+covrs diff-coverage --style markdown --comment --annotate
+```
+
+The same environment variables are required as `--comment`. The check run
+finishes with a `neutral` conclusion so it never blocks merges.
+Annotations are submitted in batches of 50 (the GitHub API limit per
+request).
+
 ## GitHub Action
 
 covrs is available as a reusable GitHub Action. It installs covrs,
@@ -177,6 +200,7 @@ the pull request:
 | `db`             | Path to the covrs SQLite database                | `.covrs.db` |
 | `root`           | Project root for making coverage paths relative  | current directory |
 | `path-prefix`    | Prefix to prepend to diff paths for matching     |             |
+| `annotate`       | Add line annotations to a check run for uncovered lines | `false` |
 | `version`        | covrs version to install (e.g. `0.1.0`)          | latest release |
 
 #### Full example
@@ -190,6 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      checks: write          # required for annotate
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -200,10 +225,11 @@ jobs:
       # Run tests and generate coverage
       - run: cargo llvm-cov test --lcov --output-path coverage.lcov
 
-      # Ingest and post the diff-coverage comment
+      # Ingest, post comment, and annotate uncovered lines
       - uses: scttnlsn/covrs@v0
         with:
           coverage-files: coverage.lcov
+          annotate: true
 ```
 
 ## Global Options
