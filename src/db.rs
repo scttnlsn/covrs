@@ -5,9 +5,10 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
-use crate::model::{FileDiffCoverage, FileSummary, LineDetail, ReportInfo, ReportSummary};
-
-use crate::model::CoverageData;
+use crate::model::{
+    CoverageData, FileCoverage, FileDiffCoverage, FileSummary, LineDetail, ReportInfo,
+    ReportSummary,
+};
 
 const SCHEMA: &str = include_str!("../schema.sql");
 
@@ -18,6 +19,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
     conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
     conn.execute_batch("PRAGMA busy_timeout=5000;")?;
+    conn.execute_batch("PRAGMA cache_size=-65536;")?; // 64 MB page cache
     Ok(conn)
 }
 
@@ -38,13 +40,34 @@ pub fn insert_coverage(
     data: &CoverageData,
     overwrite: bool,
 ) -> Result<i64> {
+    insert_coverage_streaming(conn, name, source_format, source_file, overwrite, |emit| {
+        for file in &data.files {
+            emit(file)?;
+        }
+        Ok(())
+    })
+}
+
+/// Streaming variant of [`insert_coverage`]. Instead of taking a finished
+/// `CoverageData`, accepts a closure that receives an `emit` callback.
+/// The closure should call `emit` once per source file. This lets callers
+/// pipe parsed files directly into the database without collecting them
+/// all into memory first.
+pub fn insert_coverage_streaming(
+    conn: &mut Connection,
+    name: &str,
+    source_format: &str,
+    source_file: Option<&str>,
+    overwrite: bool,
+    with_files: impl FnOnce(&mut dyn FnMut(&FileCoverage) -> Result<()>) -> Result<()>,
+) -> Result<i64> {
     let tx = conn.transaction()?;
 
     if overwrite {
         tx.execute("DELETE FROM report WHERE name = ?1", params![name])?;
     }
 
-    let report_id = insert_coverage_tx(&tx, name, source_format, source_file, data)?;
+    let report_id = insert_coverage_tx(&tx, name, source_format, source_file, with_files)?;
 
     if overwrite {
         // Clean up source files orphaned by the delete
@@ -64,12 +87,102 @@ pub fn insert_coverage(
     Ok(report_id)
 }
 
+/// Maximum rows per multi-row INSERT batch. Kept well under SQLite's
+/// default `SQLITE_MAX_VARIABLE_NUMBER` (32 766 for bundled builds).
+/// 2 000 rows × 6 params (the widest statement) = 12 000 parameters.
+const INSERT_BATCH_SIZE: usize = 2000;
+
+/// Accumulates rows and flushes them as batched multi-row INSERT statements
+/// to reduce per-row overhead.
+struct BatchInsert<'a> {
+    tx: &'a Transaction<'a>,
+    /// SQL prefix, e.g. `INSERT OR REPLACE INTO t (a, b) VALUES`.
+    prefix: &'static str,
+    /// Optional SQL suffix appended after the VALUES clause (e.g. ON CONFLICT).
+    suffix: &'static str,
+    /// Number of columns per row.
+    cols: usize,
+    /// Flat list of parameter values for the current batch.
+    params: Vec<rusqlite::types::Value>,
+    /// Number of complete rows in the current batch.
+    rows: usize,
+    /// Whether `flush` has been called after the last `push_row`.
+    flushed: bool,
+}
+
+impl<'a> BatchInsert<'a> {
+    fn new(
+        tx: &'a Transaction<'a>,
+        prefix: &'static str,
+        suffix: &'static str,
+        cols: usize,
+    ) -> Self {
+        Self {
+            tx,
+            prefix,
+            suffix,
+            cols,
+            params: Vec::with_capacity(INSERT_BATCH_SIZE * cols),
+            rows: 0,
+            flushed: true,
+        }
+    }
+
+    /// Append one complete row. Flushes automatically when the batch is full.
+    /// Takes ownership of values to avoid an extra clone.
+    fn push_row<I: IntoIterator<Item = rusqlite::types::Value>>(
+        &mut self,
+        values: I,
+    ) -> Result<()> {
+        let iter = values.into_iter();
+        let (min, _) = iter.size_hint();
+        debug_assert_eq!(min, self.cols, "wrong number of columns");
+        self.params.extend(iter);
+        self.rows += 1;
+        self.flushed = false;
+        if self.rows >= INSERT_BATCH_SIZE {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Flush any remaining rows. Must be called after the last `push_row`.
+    fn flush(&mut self) -> Result<()> {
+        if self.rows == 0 {
+            self.flushed = true;
+            return Ok(());
+        }
+        debug_assert_eq!(self.params.len(), self.rows * self.cols);
+        let values_clause = multi_row_values(self.rows, self.cols);
+        let sql = format!("{} {values_clause}{}", self.prefix, self.suffix);
+        self.tx
+            .execute(&sql, rusqlite::params_from_iter(self.params.iter()))?;
+        self.params.clear();
+        self.rows = 0;
+        self.flushed = true;
+        Ok(())
+    }
+}
+
+impl Drop for BatchInsert<'_> {
+    fn drop(&mut self) {
+        debug_assert!(self.flushed, "BatchInsert dropped with unflushed rows");
+    }
+}
+
+fn opt_u32(v: Option<u32>) -> rusqlite::types::Value {
+    match v {
+        Some(n) => rusqlite::types::Value::Integer(n as i64),
+        None => rusqlite::types::Value::Null,
+    }
+}
+
 fn insert_coverage_tx(
     tx: &Transaction,
     name: &str,
     source_format: &str,
     source_file: Option<&str>,
-    data: &CoverageData,
+    with_files: impl FnOnce(&mut dyn FnMut(&FileCoverage) -> Result<()>) -> Result<()>,
 ) -> Result<i64> {
     let now = Utc::now().to_rfc3339();
 
@@ -89,73 +202,98 @@ fn insert_coverage_tx(
     })?;
     let report_id = tx.last_insert_rowid();
 
-    // Cache source_file path -> id mappings
-    let mut file_id_cache: HashMap<&str, i64> = HashMap::new();
+    let mut file_id_cache: HashMap<String, i64> = HashMap::new();
 
-    for file_cov in &data.files {
-        let file_id = get_or_insert_source_file(tx, &file_cov.path, &mut file_id_cache)?;
+    let mut lines = BatchInsert::new(
+        tx,
+        "INSERT OR REPLACE INTO line_coverage (report_id, source_file_id, line_number, hit_count) VALUES",
+        "",
+        4,
+    );
+    let mut branches = BatchInsert::new(
+        tx,
+        "INSERT OR REPLACE INTO branch_coverage (report_id, source_file_id, line_number, branch_index, hit_count) VALUES",
+        "",
+        5,
+    );
+    let mut functions = BatchInsert::new(
+        tx,
+        "INSERT INTO function_coverage (report_id, source_file_id, name, start_line, end_line, hit_count) VALUES",
+        " ON CONFLICT(report_id, source_file_id, name, COALESCE(start_line, -1)) \
+         DO UPDATE SET hit_count = excluded.hit_count, end_line = excluded.end_line",
+        6,
+    );
 
-        // Line coverage
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO line_coverage (report_id, source_file_id, line_number, hit_count) \
-                 VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for line in &file_cov.lines {
-                stmt.execute(params![
-                    report_id,
-                    file_id,
-                    line.line_number,
-                    line.hit_count
-                ])?;
-            }
+    with_files(&mut |file_cov: &FileCoverage| {
+        let file_id = get_or_insert_source_file_owned(tx, &file_cov.path, &mut file_id_cache)?;
+        let rid = rusqlite::types::Value::Integer(report_id);
+        let fid = rusqlite::types::Value::Integer(file_id);
+
+        for line in &file_cov.lines {
+            lines.push_row([
+                rid.clone(),
+                fid.clone(),
+                (line.line_number as i64).into(),
+                (line.hit_count as i64).into(),
+            ])?;
         }
-
-        // Branch coverage
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO branch_coverage (report_id, source_file_id, line_number, branch_index, hit_count) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for branch in &file_cov.branches {
-                stmt.execute(params![
-                    report_id,
-                    file_id,
-                    branch.line_number,
-                    branch.branch_index,
-                    branch.hit_count,
-                ])?;
-            }
+        for branch in &file_cov.branches {
+            branches.push_row([
+                rid.clone(),
+                fid.clone(),
+                (branch.line_number as i64).into(),
+                (branch.branch_index as i64).into(),
+                (branch.hit_count as i64).into(),
+            ])?;
         }
-
-        // Function coverage — use upsert with COALESCE for NULL-safe dedup
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO function_coverage (report_id, source_file_id, name, start_line, end_line, hit_count) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                 ON CONFLICT(report_id, source_file_id, name, COALESCE(start_line, -1)) \
-                 DO UPDATE SET hit_count = excluded.hit_count, end_line = excluded.end_line",
-            )?;
-            for func in &file_cov.functions {
-                stmt.execute(params![
-                    report_id,
-                    file_id,
-                    func.name,
-                    func.start_line,
-                    func.end_line,
-                    func.hit_count,
-                ])?;
-            }
+        for func in &file_cov.functions {
+            functions.push_row([
+                rid.clone(),
+                fid.clone(),
+                func.name.clone().into(),
+                opt_u32(func.start_line),
+                opt_u32(func.end_line),
+                (func.hit_count as i64).into(),
+            ])?;
         }
-    }
+        Ok(())
+    })?;
+
+    lines.flush()?;
+    branches.flush()?;
+    functions.flush()?;
 
     Ok(report_id)
 }
 
-fn get_or_insert_source_file<'a>(
+/// Generate a VALUES clause like `(?,?,?),(?,?,?),...` for `rows` rows of
+/// `cols` columns each, using positional (`?`) placeholders.
+fn multi_row_values(rows: usize, cols: usize) -> String {
+    // Build the single-row template "(?,?,...,?)" without allocating a Vec.
+    let mut single = String::with_capacity(2 + cols * 2);
+    single.push('(');
+    for i in 0..cols {
+        if i > 0 {
+            single.push(',');
+        }
+        single.push('?');
+    }
+    single.push(')');
+
+    let mut out = String::with_capacity((single.len() + 1) * rows);
+    for i in 0..rows {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&single);
+    }
+    out
+}
+
+fn get_or_insert_source_file_owned(
     tx: &Transaction,
-    path: &'a str,
-    cache: &mut HashMap<&'a str, i64>,
+    path: &str,
+    cache: &mut HashMap<String, i64>,
 ) -> Result<i64> {
     if let Some(&id) = cache.get(path) {
         return Ok(id);
@@ -167,11 +305,62 @@ fn get_or_insert_source_file<'a>(
         params![path],
         |row| row.get(0),
     )?;
-    cache.insert(path, id);
+    cache.insert(path.to_owned(), id);
     Ok(id)
 }
 
 // ── Query helpers ──────────────────────────────────────────────────────────
+
+/// Returns true when there are multiple reports in the database, meaning
+/// queries must use GROUP BY / MAX(hit_count) to implement union semantics
+/// (a line is covered if ANY report covers it). When there is at most one
+/// report every (source_file_id, line_number) tuple is already unique
+/// (enforced by the primary key) so the grouping can be skipped.
+fn needs_union(conn: &Connection) -> Result<bool> {
+    let count: u32 = conn.query_row("SELECT COUNT(*) FROM report", [], |row| row.get(0))?;
+    Ok(count > 1)
+}
+
+/// Which coverage table to build a union source for.
+enum UnionKind {
+    Line,
+    /// Line source that also projects source_file_id for per-file grouping.
+    LinePerFile,
+    Branch,
+    /// Branch source that also projects source_file_id for per-file grouping.
+    BranchPerFile,
+    Function,
+}
+
+/// Returns a SQL fragment (table name or subquery) that collapses duplicate
+/// rows via MAX(hit_count) when `union` is true, or the raw table when false.
+fn union_source(union: bool, kind: UnionKind) -> &'static str {
+    match (union, kind) {
+        (false, UnionKind::Line | UnionKind::LinePerFile) => "line_coverage",
+        (true, UnionKind::Line) => {
+            "(SELECT source_file_id, MAX(hit_count) AS hit_count \
+              FROM line_coverage GROUP BY source_file_id, line_number)"
+        }
+        (true, UnionKind::LinePerFile) => {
+            "(SELECT source_file_id, line_number, MAX(hit_count) AS hit_count \
+              FROM line_coverage GROUP BY source_file_id, line_number)"
+        }
+        (false, UnionKind::Branch | UnionKind::BranchPerFile) => "branch_coverage",
+        (true, UnionKind::Branch) => {
+            "(SELECT MAX(hit_count) AS hit_count \
+              FROM branch_coverage GROUP BY source_file_id, line_number, branch_index)"
+        }
+        (true, UnionKind::BranchPerFile) => {
+            "(SELECT source_file_id, MAX(hit_count) AS hit_count \
+              FROM branch_coverage GROUP BY source_file_id, line_number, branch_index)"
+        }
+        (false, UnionKind::Function) => "function_coverage",
+        (true, UnionKind::Function) => {
+            "(SELECT MAX(hit_count) AS hit_count \
+              FROM function_coverage GROUP BY source_file_id, name, COALESCE(start_line, -1))"
+        }
+    }
+}
 
 /// List all reports in the database.
 pub fn list_reports(conn: &Connection) -> Result<Vec<ReportInfo>> {
@@ -197,6 +386,7 @@ pub fn diff_coverage(
     conn: &Connection,
     diff_lines: &HashMap<String, Vec<u32>>,
 ) -> Result<(Vec<FileDiffCoverage>, usize, usize)> {
+    let union = needs_union(conn)?;
     let mut results: Vec<FileDiffCoverage> = Vec::new();
     let mut total_covered: usize = 0;
     let mut total_instrumentable: usize = 0;
@@ -222,11 +412,19 @@ pub fn diff_coverage(
         const BATCH_SIZE: usize = 500;
         for chunk in lines.chunks(BATCH_SIZE) {
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!(
-                r#"SELECT line_number, MAX(hit_count) FROM line_coverage
-                 WHERE source_file_id = ? AND line_number IN ({placeholders})
-                 GROUP BY line_number"#
-            );
+
+            let sql = if union {
+                format!(
+                    r#"SELECT line_number, MAX(hit_count) FROM line_coverage
+                     WHERE source_file_id = ? AND line_number IN ({placeholders})
+                     GROUP BY line_number"#
+                )
+            } else {
+                format!(
+                    r#"SELECT line_number, hit_count FROM line_coverage
+                     WHERE source_file_id = ? AND line_number IN ({placeholders})"#
+                )
+            };
             let mut stmt = conn.prepare(&sql)?;
 
             let params: Vec<rusqlite::types::Value> =
@@ -277,47 +475,45 @@ pub fn diff_coverage(
 /// Summary across all reports (union semantics: a line/branch/function is
 /// covered if ANY report covers it).
 pub fn get_summary(conn: &Connection) -> Result<ReportSummary> {
-    let count: u32 = conn.query_row("SELECT COUNT(*) FROM report", [], |row| row.get(0))?;
-    if count == 0 {
+    let report_count: u32 = conn.query_row("SELECT COUNT(*) FROM report", [], |row| row.get(0))?;
+    if report_count == 0 {
         bail!("No reports in database. Run 'covrs ingest' first.");
     }
 
+    // When there is only one report every (source_file_id, line_number)
+    // tuple is already unique (enforced by the PK) so we can skip the
+    // GROUP BY / MAX(hit_count) subqueries.
+    let union = report_count > 1;
+    let line_src = union_source(union, UnionKind::Line);
+    let branch_src = union_source(union, UnionKind::Branch);
+    let function_src = union_source(union, UnionKind::Function);
+
     let (total_files, total_lines, covered_lines): (u64, u64, u64) = conn.query_row(
-        "SELECT
-             COUNT(DISTINCT source_file_id),
-             COUNT(*),
-             COALESCE(SUM(CASE WHEN max_hits > 0 THEN 1 ELSE 0 END), 0)
-         FROM (
-             SELECT source_file_id, line_number, MAX(hit_count) as max_hits
-             FROM line_coverage
-             GROUP BY source_file_id, line_number
-         )",
+        &format!(
+            "SELECT COUNT(DISTINCT source_file_id), COUNT(*),
+                    COALESCE(SUM(CASE WHEN hit_count > 0 THEN 1 ELSE 0 END), 0)
+             FROM {line_src}"
+        ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
 
     let (total_branches, covered_branches): (u64, u64) = conn.query_row(
-        "SELECT
-             COUNT(*),
-             COALESCE(SUM(CASE WHEN max_hits > 0 THEN 1 ELSE 0 END), 0)
-         FROM (
-             SELECT MAX(hit_count) as max_hits
-             FROM branch_coverage
-             GROUP BY source_file_id, line_number, branch_index
-         )",
+        &format!(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN hit_count > 0 THEN 1 ELSE 0 END), 0)
+             FROM {branch_src}"
+        ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
     let (total_functions, covered_functions): (u64, u64) = conn.query_row(
-        "SELECT
-             COUNT(*),
-             COALESCE(SUM(CASE WHEN max_hits > 0 THEN 1 ELSE 0 END), 0)
-         FROM (
-             SELECT MAX(hit_count) as max_hits
-             FROM function_coverage
-             GROUP BY source_file_id, name, COALESCE(start_line, -1)
-         )",
+        &format!(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN hit_count > 0 THEN 1 ELSE 0 END), 0)
+             FROM {function_src}"
+        ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -335,32 +531,30 @@ pub fn get_summary(conn: &Connection) -> Result<ReportSummary> {
 
 /// Per-file coverage summaries across all reports (union semantics).
 pub fn get_file_summaries(conn: &Connection) -> Result<Vec<FileSummary>> {
-    let mut stmt = conn.prepare(
+    let union = needs_union(conn)?;
+    let line_src = union_source(union, UnionKind::LinePerFile);
+    let branch_src = union_source(union, UnionKind::BranchPerFile);
+
+    let sql = format!(
         "SELECT sf.path,
-                COUNT(*) as total,
-                SUM(CASE WHEN lc.max_hits > 0 THEN 1 ELSE 0 END) as covered,
+                COUNT(*) AS total,
+                SUM(CASE WHEN lc.hit_count > 0 THEN 1 ELSE 0 END) AS covered,
                 COALESCE(bc.total_branches, 0),
                 COALESCE(bc.covered_branches, 0)
-         FROM (
-             SELECT source_file_id, line_number, MAX(hit_count) as max_hits
-             FROM line_coverage
-             GROUP BY source_file_id, line_number
-         ) lc
+         FROM {line_src} lc
          JOIN source_file sf ON sf.id = lc.source_file_id
          LEFT JOIN (
              SELECT source_file_id,
-                    COUNT(*) as total_branches,
-                    SUM(CASE WHEN max_hits > 0 THEN 1 ELSE 0 END) as covered_branches
-             FROM (
-                 SELECT source_file_id, line_number, branch_index, MAX(hit_count) as max_hits
-                 FROM branch_coverage
-                 GROUP BY source_file_id, line_number, branch_index
-             )
+                    COUNT(*) AS total_branches,
+                    SUM(CASE WHEN hit_count > 0 THEN 1 ELSE 0 END) AS covered_branches
+             FROM {branch_src}
              GROUP BY source_file_id
          ) bc ON bc.source_file_id = lc.source_file_id
          GROUP BY sf.path
-         ORDER BY sf.path",
-    )?;
+         ORDER BY sf.path"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
 
     let rows = stmt.query_map([], |row| {
         Ok(FileSummary {
@@ -385,13 +579,22 @@ pub fn get_lines(conn: &Connection, source_path: &str) -> Result<Vec<LineDetail>
         )
         .map_err(|_| anyhow::anyhow!("Source file not found: {source_path}"))?;
 
-    let mut stmt = conn.prepare(
-        "SELECT line_number, MAX(hit_count) as hit_count
-         FROM line_coverage
-         WHERE source_file_id = ?1
-         GROUP BY line_number
-         ORDER BY line_number",
-    )?;
+    let mut stmt = if needs_union(conn)? {
+        conn.prepare(
+            "SELECT line_number, MAX(hit_count) AS hit_count
+             FROM line_coverage
+             WHERE source_file_id = ?1
+             GROUP BY line_number
+             ORDER BY line_number",
+        )?
+    } else {
+        conn.prepare(
+            "SELECT line_number, hit_count
+             FROM line_coverage
+             WHERE source_file_id = ?1
+             ORDER BY line_number",
+        )?
+    };
 
     let rows = stmt.query_map(params![source_file_id], |row| {
         Ok(LineDetail {

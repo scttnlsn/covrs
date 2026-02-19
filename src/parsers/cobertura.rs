@@ -22,6 +22,7 @@
 ///     </packages>
 ///   </coverage>
 use std::collections::HashMap;
+use std::io::BufRead;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -48,16 +49,31 @@ impl CoverageParser for CoberturaParser {
         super::looks_like_xml(&head) && head.contains("<coverage")
     }
 
-    fn parse(&self, input: &[u8]) -> Result<CoverageData> {
-        parse(input)
+    fn parse_streaming(
+        &self,
+        reader: &mut dyn BufRead,
+        emit: &mut dyn FnMut(FileCoverage) -> Result<()>,
+    ) -> Result<()> {
+        parse_streaming(reader, emit)
     }
 }
 
 /// Parse Cobertura XML coverage data from raw bytes.
 pub fn parse(input: &[u8]) -> Result<CoverageData> {
-    let mut reader = super::xml_reader(input);
-
     let mut data = CoverageData::new();
+    parse_streaming(&mut &*input, &mut |file| {
+        data.files.push(file);
+        Ok(())
+    })?;
+    Ok(data)
+}
+
+/// Streaming Cobertura parser — calls `emit` once per `</class>`.
+fn parse_streaming(
+    reader: &mut dyn BufRead,
+    emit: &mut dyn FnMut(FileCoverage) -> Result<()>,
+) -> Result<()> {
+    let mut xml = super::xml_reader(reader);
     let mut buf = Vec::new();
 
     // State tracking
@@ -76,10 +92,10 @@ pub fn parse(input: &[u8]) -> Result<CoverageData> {
     let branch_re = &*BRANCH_RE;
 
     loop {
-        let event = reader.read_event_into(&mut buf);
+        let event = xml.read_event_into(&mut buf);
         let is_start_event = matches!(&event, Ok(Event::Start(_)));
         match event {
-            Err(e) => return Err(super::xml_err(e, &reader)),
+            Err(e) => return Err(super::xml_err(e, &xml)),
             Ok(Event::Eof) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 match e.name().as_ref() {
@@ -219,8 +235,9 @@ pub fn parse(input: &[u8]) -> Result<CoverageData> {
                     in_source = false;
                 }
                 b"class" => {
-                    if let Some(file) = current_file.take() {
-                        data.files.push(file);
+                    if let Some(mut file) = current_file.take() {
+                        file.lines.sort_by_key(|l| l.line_number);
+                        emit(file)?;
                     }
                 }
                 b"method" => {
@@ -247,17 +264,12 @@ pub fn parse(input: &[u8]) -> Result<CoverageData> {
     }
 
     // Handle unclosed file
-    if let Some(file) = current_file.take() {
-        data.files.push(file);
-    }
-
-    // Sort lines within each file by line number for consistent output,
-    // since lines may have been collected from both <method> and <class> blocks.
-    for file in &mut data.files {
+    if let Some(mut file) = current_file.take() {
         file.lines.sort_by_key(|l| l.line_number);
+        emit(file)?;
     }
 
-    Ok(data)
+    Ok(())
 }
 
 /// Resolve a filename against the list of `<source>` prefixes.

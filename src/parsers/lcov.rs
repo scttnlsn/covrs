@@ -17,6 +17,7 @@
 ///   LH:<lines hit>
 ///   end_of_record
 use std::collections::HashMap;
+use std::io::BufRead;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -51,19 +52,32 @@ impl CoverageParser for LcovParser {
         has_sf && has_da_or_fn
     }
 
-    fn parse(&self, input: &[u8]) -> Result<CoverageData> {
-        parse(input)
+    fn parse_streaming(
+        &self,
+        reader: &mut dyn BufRead,
+        emit: &mut dyn FnMut(FileCoverage) -> Result<()>,
+    ) -> Result<()> {
+        parse_streaming_reader(reader, emit)
     }
 }
 
 /// Parse LCOV format coverage data from raw bytes.
 pub fn parse(input: &[u8]) -> Result<CoverageData> {
-    let text = std::str::from_utf8(input).context("Invalid UTF-8 in LCOV data")?;
-    parse_inner(text)
+    let mut data = CoverageData::new();
+    parse_streaming_reader(&mut &*input, &mut |file| {
+        data.files.push(file);
+        Ok(())
+    })?;
+    Ok(data)
 }
 
-fn parse_inner(text: &str) -> Result<CoverageData> {
-    let mut data = CoverageData::new();
+/// Streaming LCOV parser — calls `emit` once per `end_of_record`.
+/// Reads line-by-line from a buffered reader so the full input need
+/// not be in memory at once.
+fn parse_streaming_reader(
+    reader: &mut dyn BufRead,
+    emit: &mut dyn FnMut(FileCoverage) -> Result<()>,
+) -> Result<()> {
     let mut current_file: Option<FileCoverage> = None;
 
     // Track branch indices per line within the current file.
@@ -73,7 +87,16 @@ fn parse_inner(text: &str) -> Result<CoverageData> {
     // end_line is not provided in LCOV; we leave it as None.
     let mut fn_defs: HashMap<String, Option<u32>> = HashMap::new();
 
-    for raw_line in text.lines() {
+    let mut raw_line = String::new();
+    loop {
+        raw_line.clear();
+        let n = reader
+            .read_line(&mut raw_line)
+            .context("Invalid UTF-8 in LCOV data")?;
+        if n == 0 {
+            break; // EOF
+        }
+
         let line = raw_line.trim();
         if line.is_empty() {
             continue;
@@ -81,7 +104,7 @@ fn parse_inner(text: &str) -> Result<CoverageData> {
 
         if line == "end_of_record" {
             if let Some(file) = current_file.take() {
-                data.files.push(file);
+                emit(file)?;
             }
             branch_indices.clear();
             fn_defs.clear();
@@ -180,10 +203,10 @@ fn parse_inner(text: &str) -> Result<CoverageData> {
 
     // Handle case where file ends without end_of_record
     if let Some(file) = current_file.take() {
-        data.files.push(file);
+        emit(file)?;
     }
 
-    Ok(data)
+    Ok(())
 }
 
 #[cfg(test)]
