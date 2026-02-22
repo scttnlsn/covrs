@@ -46,6 +46,18 @@ jobs:
       - name: Fuzz cobertura parser
         run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_cobertura -- -max_total_time=10
 
+      - name: Fuzz clover parser
+        run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_clover -- -max_total_time=10
+
+      - name: Fuzz jacoco parser
+        run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_jacoco -- -max_total_time=10
+
+      - name: Fuzz istanbul parser
+        run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_istanbul -- -max_total_time=10
+
+      - name: Fuzz gocover parser
+        run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_gocover -- -max_total_time=10
+
       - name: Fuzz diff parser
         run: cargo fuzz run --fuzz-dir tests/fuzz fuzz_diff -- -max_total_time=10
 
