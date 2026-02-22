@@ -1,4 +1,5 @@
 pub mod cobertura;
+pub mod gocover;
 pub mod jacoco;
 pub mod lcov;
 
@@ -66,6 +67,7 @@ pub(crate) fn xml_err<R>(e: quick_xml::Error, reader: &Reader<R>) -> anyhow::Err
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Cobertura,
+    Gocover,
     Jacoco,
     Lcov,
 }
@@ -74,6 +76,7 @@ impl std::fmt::Display for Format {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Format::Cobertura => f.write_str("cobertura"),
+            Format::Gocover => f.write_str("gocover"),
             Format::Jacoco => f.write_str("jacoco"),
             Format::Lcov => f.write_str("lcov"),
         }
@@ -86,10 +89,11 @@ impl std::str::FromStr for Format {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "cobertura" => Ok(Format::Cobertura),
+            "gocover" | "go" => Ok(Format::Gocover),
             "jacoco" => Ok(Format::Jacoco),
             "lcov" => Ok(Format::Lcov),
             _ => Err(anyhow::anyhow!(
-                "Unknown format: '{s}'. Supported: cobertura, jacoco, lcov"
+                "Unknown format: '{s}'. Supported: cobertura, gocover, jacoco, lcov"
             )),
         }
     }
@@ -99,12 +103,15 @@ impl std::str::FromStr for Format {
 ///
 /// LCOV is checked first because its content markers are very specific
 /// (lines starting with `SF:`, `DA:`, etc.) so false positives are unlikely.
+/// Go cover is next — its `mode:` header and `.go:` block patterns are
+/// equally distinctive and won't collide with LCOV or XML formats.
 /// JaCoCo is checked before Cobertura since both are XML but JaCoCo's
 /// `<report` + `jacoco`/`<package` markers are more specific than
 /// Cobertura's `<coverage`.
 pub fn all() -> Vec<Box<dyn CoverageParser>> {
     vec![
         Box::new(lcov::LcovParser),
+        Box::new(gocover::GocoverParser),
         Box::new(jacoco::JacocoParser),
         Box::new(cobertura::CoberturaParser),
     ]
@@ -119,6 +126,7 @@ pub fn detect(path: &Path, content: &[u8]) -> Option<Box<dyn CoverageParser>> {
 pub fn for_format(format: Format) -> Box<dyn CoverageParser> {
     match format {
         Format::Cobertura => Box::new(cobertura::CoberturaParser),
+        Format::Gocover => Box::new(gocover::GocoverParser),
         Format::Jacoco => Box::new(jacoco::JacocoParser),
         Format::Lcov => Box::new(lcov::LcovParser),
     }
@@ -165,6 +173,22 @@ mod tests {
         let content = b"<?xml version=\"1.0\"?>\n<coverage version=\"1.0\">";
         let parser = detect(Path::new("coverage.xml"), content).unwrap();
         assert_eq!(parser.format(), Format::Cobertura);
+    }
+
+    #[test]
+    fn test_detect_gocover_by_extension() {
+        let parser = detect(Path::new("coverage.coverprofile"), b"").unwrap();
+        assert_eq!(parser.format(), Format::Gocover);
+
+        let parser = detect(Path::new("coverage.gocov"), b"").unwrap();
+        assert_eq!(parser.format(), Format::Gocover);
+    }
+
+    #[test]
+    fn test_detect_gocover_by_content() {
+        let content = b"mode: count\ngithub.com/user/repo/main.go:10.1,20.5 3 1\n";
+        let parser = detect(Path::new("coverage.out"), content).unwrap();
+        assert_eq!(parser.format(), Format::Gocover);
     }
 
     #[test]
