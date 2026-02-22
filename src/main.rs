@@ -25,7 +25,7 @@ enum Commands {
         /// Path to the coverage file.
         file: PathBuf,
 
-        /// Override format detection (cobertura, jacoco, lcov).
+        /// Override format detection (cobertura, gocover, jacoco, lcov).
         #[arg(long)]
         format: Option<String>,
 

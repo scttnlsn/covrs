@@ -43,8 +43,7 @@ impl CoverageParser for LcovParser {
         }
 
         // Content-based: lines starting with SF: and DA:/FN:
-        let head_len = content.len().min(4096);
-        let head = String::from_utf8_lossy(&content[..head_len]);
+        let head = super::sniff_head(content);
         let has_sf = head.lines().any(|l| l.starts_with("SF:"));
         let has_da_or_fn = head
             .lines()
