@@ -6,7 +6,7 @@ Here's a [demo](https://github.com/scttnlsn/covrs/pull/3).
 
 ## Why
 
-Coverage tools produce reports in different formats (LCOV, Cobertura, JaCoCo, etc.) and each has its own tooling. **covrs** normalizes them all into one SQLite database so you can:
+Coverage tools produce reports in different formats (LCOV, Clover, Cobertura, JaCoCo, etc.) and each has its own tooling. **covrs** normalizes them all into one SQLite database so you can:
 
 - Ingest multiple reports — coverage is automatically unioned across all of them
 - Compute diff coverage against a git diff
@@ -31,6 +31,7 @@ cargo install --path .
 | Format    | Extensions                  | Auto-detected |
 |-----------|------------------------------|---------------|
 | LCOV      | `.info`, `.lcov`             | ✓             |
+| Clover    | `.xml`                       | ✓             |
 | Cobertura | `.xml`                       | ✓             |
 | JaCoCo    | `.xml`                       | ✓             |
 | Istanbul  | `coverage-final.json`        | ✓             |

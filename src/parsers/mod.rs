@@ -1,3 +1,4 @@
+pub mod clover;
 pub mod cobertura;
 pub mod gocover;
 pub mod istanbul;
@@ -32,7 +33,7 @@ pub trait CoverageParser {
     ) -> Result<()>;
 }
 
-// ── Shared XML helpers used by cobertura & jacoco parsers ──────────
+// ── Shared XML helpers used by clover, cobertura & jacoco parsers ──
 
 /// Peek at the first 4 KiB of content as a string for format detection.
 pub(crate) fn sniff_head(content: &[u8]) -> std::borrow::Cow<'_, str> {
@@ -67,6 +68,7 @@ pub(crate) fn xml_err<R>(e: quick_xml::Error, reader: &Reader<R>) -> anyhow::Err
 /// Supported coverage formats, used for the `--format` CLI override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
+    Clover,
     Cobertura,
     Gocover,
     Istanbul,
@@ -77,6 +79,7 @@ pub enum Format {
 impl std::fmt::Display for Format {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Format::Clover => f.write_str("clover"),
             Format::Cobertura => f.write_str("cobertura"),
             Format::Gocover => f.write_str("gocover"),
             Format::Istanbul => f.write_str("istanbul"),
@@ -91,13 +94,14 @@ impl std::str::FromStr for Format {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "clover" => Ok(Format::Clover),
             "cobertura" => Ok(Format::Cobertura),
             "gocover" | "go" => Ok(Format::Gocover),
             "istanbul" | "nyc" => Ok(Format::Istanbul),
             "jacoco" => Ok(Format::Jacoco),
             "lcov" => Ok(Format::Lcov),
             _ => Err(anyhow::anyhow!(
-                "Unknown format: '{s}'. Supported: cobertura, gocover, istanbul, jacoco, lcov"
+                "Unknown format: '{s}'. Supported: clover, cobertura, gocover, istanbul, jacoco, lcov"
             )),
         }
     }
@@ -114,12 +118,16 @@ impl std::str::FromStr for Format {
 /// JaCoCo is checked before Cobertura since both are XML but JaCoCo's
 /// `<report` + `jacoco`/`<package` markers are more specific than
 /// Cobertura's `<coverage`.
+/// Clover is checked before Cobertura because both use `<coverage` as the
+/// root element, but Clover's detection requires the more specific
+/// `clover=` attribute, so it won't false-positive on Cobertura files.
 pub fn all() -> Vec<Box<dyn CoverageParser>> {
     vec![
         Box::new(lcov::LcovParser),
         Box::new(gocover::GocoverParser),
         Box::new(istanbul::IstanbulParser),
         Box::new(jacoco::JacocoParser),
+        Box::new(clover::CloverParser),
         Box::new(cobertura::CoberturaParser),
     ]
 }
@@ -132,6 +140,7 @@ pub fn detect(path: &Path, content: &[u8]) -> Option<Box<dyn CoverageParser>> {
 /// Get the appropriate parser for an explicit format name.
 pub fn for_format(format: Format) -> Box<dyn CoverageParser> {
     match format {
+        Format::Clover => Box::new(clover::CloverParser),
         Format::Cobertura => Box::new(cobertura::CoberturaParser),
         Format::Gocover => Box::new(gocover::GocoverParser),
         Format::Istanbul => Box::new(istanbul::IstanbulParser),
@@ -210,6 +219,22 @@ mod tests {
         let content = br#"{ "/src/lib.js": { "statementMap": { "0": { "start": { "line": 1 } } }, "s": { "0": 1 }, "fnMap": {}, "f": {} } }"#;
         let parser = detect(Path::new("coverage.json"), content).unwrap();
         assert_eq!(parser.format(), Format::Istanbul);
+    }
+
+    #[test]
+    fn test_detect_clover_by_content() {
+        let content =
+            b"<?xml version=\"1.0\"?>\n<coverage generated=\"123\" clover=\"4.4.1\"><project>";
+        let parser = detect(Path::new("clover.xml"), content).unwrap();
+        assert_eq!(parser.format(), Format::Clover);
+    }
+
+    #[test]
+    fn test_detect_clover_not_cobertura() {
+        // Cobertura XML should not be detected as Clover.
+        let content = b"<?xml version=\"1.0\"?>\n<coverage version=\"1.0\">";
+        let parser = detect(Path::new("coverage.xml"), content).unwrap();
+        assert_eq!(parser.format(), Format::Cobertura);
     }
 
     #[test]
