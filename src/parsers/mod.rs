@@ -1,5 +1,6 @@
 pub mod cobertura;
 pub mod gocover;
+pub mod istanbul;
 pub mod jacoco;
 pub mod lcov;
 
@@ -68,6 +69,7 @@ pub(crate) fn xml_err<R>(e: quick_xml::Error, reader: &Reader<R>) -> anyhow::Err
 pub enum Format {
     Cobertura,
     Gocover,
+    Istanbul,
     Jacoco,
     Lcov,
 }
@@ -77,6 +79,7 @@ impl std::fmt::Display for Format {
         match self {
             Format::Cobertura => f.write_str("cobertura"),
             Format::Gocover => f.write_str("gocover"),
+            Format::Istanbul => f.write_str("istanbul"),
             Format::Jacoco => f.write_str("jacoco"),
             Format::Lcov => f.write_str("lcov"),
         }
@@ -90,10 +93,11 @@ impl std::str::FromStr for Format {
         match s.to_lowercase().as_str() {
             "cobertura" => Ok(Format::Cobertura),
             "gocover" | "go" => Ok(Format::Gocover),
+            "istanbul" | "nyc" => Ok(Format::Istanbul),
             "jacoco" => Ok(Format::Jacoco),
             "lcov" => Ok(Format::Lcov),
             _ => Err(anyhow::anyhow!(
-                "Unknown format: '{s}'. Supported: cobertura, gocover, jacoco, lcov"
+                "Unknown format: '{s}'. Supported: cobertura, gocover, istanbul, jacoco, lcov"
             )),
         }
     }
@@ -105,6 +109,8 @@ impl std::str::FromStr for Format {
 /// (lines starting with `SF:`, `DA:`, etc.) so false positives are unlikely.
 /// Go cover is next — its `mode:` header and `.go:` block patterns are
 /// equally distinctive and won't collide with LCOV or XML formats.
+/// Istanbul is checked before the XML parsers because its JSON-based
+/// `statementMap`/`s` markers are very specific and won't collide.
 /// JaCoCo is checked before Cobertura since both are XML but JaCoCo's
 /// `<report` + `jacoco`/`<package` markers are more specific than
 /// Cobertura's `<coverage`.
@@ -112,6 +118,7 @@ pub fn all() -> Vec<Box<dyn CoverageParser>> {
     vec![
         Box::new(lcov::LcovParser),
         Box::new(gocover::GocoverParser),
+        Box::new(istanbul::IstanbulParser),
         Box::new(jacoco::JacocoParser),
         Box::new(cobertura::CoberturaParser),
     ]
@@ -127,6 +134,7 @@ pub fn for_format(format: Format) -> Box<dyn CoverageParser> {
     match format {
         Format::Cobertura => Box::new(cobertura::CoberturaParser),
         Format::Gocover => Box::new(gocover::GocoverParser),
+        Format::Istanbul => Box::new(istanbul::IstanbulParser),
         Format::Jacoco => Box::new(jacoco::JacocoParser),
         Format::Lcov => Box::new(lcov::LcovParser),
     }
@@ -189,6 +197,19 @@ mod tests {
         let content = b"mode: count\ngithub.com/user/repo/main.go:10.1,20.5 3 1\n";
         let parser = detect(Path::new("coverage.out"), content).unwrap();
         assert_eq!(parser.format(), Format::Gocover);
+    }
+
+    #[test]
+    fn test_detect_istanbul_by_filename() {
+        let parser = detect(Path::new("coverage-final.json"), b"").unwrap();
+        assert_eq!(parser.format(), Format::Istanbul);
+    }
+
+    #[test]
+    fn test_detect_istanbul_by_content() {
+        let content = br#"{ "/src/lib.js": { "statementMap": { "0": { "start": { "line": 1 } } }, "s": { "0": 1 }, "fnMap": {}, "f": {} } }"#;
+        let parser = detect(Path::new("coverage.json"), content).unwrap();
+        assert_eq!(parser.format(), Format::Istanbul);
     }
 
     #[test]
