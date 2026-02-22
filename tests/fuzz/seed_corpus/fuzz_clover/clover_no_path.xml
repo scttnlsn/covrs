@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<coverage generated="123" clover="4.4.1">
+  <project name="test">
+    <package name="pkg">
+      <file name="app.py">
+        <line num="1" count="1" type="stmt"/>
+      </file>
+    </package>
+  </project>
+</coverage>

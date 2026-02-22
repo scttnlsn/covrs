@@ -51,3 +51,17 @@ path = "fuzz_targets/fuzz_jacoco.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_istanbul"
+path = "fuzz_targets/fuzz_istanbul.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_gocover"
+path = "fuzz_targets/fuzz_gocover.rs"
+test = false
+doc = false
+bench = false
