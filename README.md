@@ -28,11 +28,13 @@ cargo install --path .
 
 ## Supported Formats
 
-| Format    | Extensions       | Auto-detected |
-|-----------|------------------|---------------|
-| LCOV      | `.info`, `.lcov` | ✓             |
-| Cobertura | `.xml`           | ✓             |
-| JaCoCo    | `.xml`           | ✓             |
+| Format    | Extensions                  | Auto-detected |
+|-----------|------------------------------|---------------|
+| LCOV      | `.info`, `.lcov`             | ✓             |
+| Cobertura | `.xml`                       | ✓             |
+| JaCoCo    | `.xml`                       | ✓             |
+| Istanbul  | `coverage-final.json`        | ✓             |
+| Go        | `.coverprofile`, `.gocov`    | ✓             |
 
 Format detection works by checking file extensions first, then inspecting file content. You can always override with `--format`.
 

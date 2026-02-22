@@ -6,7 +6,7 @@ description = "Code coverage ingestion and reporting"
 license = "MIT"
 repository = "https://github.com/scttnlsn/covrs"
 readme = "README.md"
-keywords = ["coverage", "lcov", "cobertura", "reporting"]
+keywords = ["coverage", "lcov", "cobertura", "istanbul", "reporting"]
 categories = ["command-line-utilities", "development-tools::testing"]
 exclude = ["tests/", "scripts/"]
 
