@@ -569,6 +569,31 @@ pub fn get_file_summaries(conn: &Connection) -> Result<Vec<FileSummary>> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Total line coverage rate for a single file (union semantics).
+///
+/// Returns `None` if the file is not in the database.
+pub fn get_file_line_rate(conn: &Connection, path: &str) -> Result<Option<f64>> {
+    let union = needs_union(conn)?;
+    let line_src = union_source(union, UnionKind::LinePerFile);
+
+    let sql = format!(
+        "SELECT COUNT(*) AS total,
+                SUM(CASE WHEN lc.hit_count > 0 THEN 1 ELSE 0 END) AS covered
+         FROM {line_src} lc
+         JOIN source_file sf ON sf.id = lc.source_file_id
+         WHERE sf.path = ?1"
+    );
+
+    let (total, covered): (u64, u64) =
+        conn.query_row(&sql, params![path], |row| Ok((row.get(0)?, row.get(1)?)))?;
+
+    if total == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(crate::model::rate(covered, total)))
+    }
+}
+
 /// Line-level detail for a source file across all reports (union semantics).
 pub fn get_lines(conn: &Connection, source_path: &str) -> Result<Vec<LineDetail>> {
     let source_file_id: i64 = conn
