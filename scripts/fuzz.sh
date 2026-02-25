@@ -3,14 +3,28 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-echo "Running fuzz tests for 10 seconds each..."
+MAX_TIME="${FUZZ_MAX_TIME:-10}"
+MAX_LEN="${FUZZ_MAX_LEN:-65536}"
+RSS_LIMIT="${FUZZ_RSS_LIMIT:-1024}"
 
-cargo fuzz run --fuzz-dir tests/fuzz fuzz_lcov -- -max_total_time=10
-cargo fuzz run --fuzz-dir tests/fuzz fuzz_cobertura -- -max_total_time=10
-cargo fuzz run --fuzz-dir tests/fuzz fuzz_clover -- -max_total_time=10
-cargo fuzz run --fuzz-dir tests/fuzz fuzz_jacoco -- -max_total_time=10
-cargo fuzz run --fuzz-dir tests/fuzz fuzz_istanbul -- -max_total_time=10
-cargo fuzz run --fuzz-dir tests/fuzz fuzz_gocover -- -max_total_time=10
-cargo fuzz run --fuzz-dir tests/fuzz fuzz_diff -- -max_total_time=10
+TARGETS=(
+  fuzz_lcov
+  fuzz_cobertura
+  fuzz_clover
+  fuzz_jacoco
+  fuzz_istanbul
+  fuzz_gocover
+  fuzz_diff
+)
+
+echo "Running ${#TARGETS[@]} fuzz targets for ${MAX_TIME}s each..."
+
+for target in "${TARGETS[@]}"; do
+  echo "  Fuzzing $target..."
+  cargo fuzz run --fuzz-dir tests/fuzz "$target" -- \
+    -max_total_time="$MAX_TIME" \
+    -max_len="$MAX_LEN" \
+    -rss_limit_mb="$RSS_LIMIT"
+done
 
 echo "All fuzz tests completed!"
