@@ -147,6 +147,16 @@ impl FileDiffCoverage {
     pub fn rate(&self) -> f64 {
         rate(self.covered_lines.len() as u64, self.total() as u64)
     }
+
+    /// All instrumentable line numbers (covered + missed), sorted.
+    #[must_use]
+    pub fn all_instrumentable(&self) -> Vec<u32> {
+        let mut all = Vec::with_capacity(self.covered_lines.len() + self.missed_lines.len());
+        all.extend_from_slice(&self.covered_lines);
+        all.extend_from_slice(&self.missed_lines);
+        all.sort();
+        all
+    }
 }
 
 /// A single annotation to attach to a GitHub check run.
