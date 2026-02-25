@@ -1,45 +1,94 @@
 # covrs
 
-Ingest multi-format code coverage reports into a unified SQLite store. Query and diff coverage data from a single database — no server required. Post coverage results as comments on GitHub pull requests with a single command or [reusable Action](#github-action).
+[![CI](https://github.com/scttnlsn/covrs/actions/workflows/ci.yml/badge.svg)](https://github.com/scttnlsn/covrs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/covrs.svg)](https://crates.io/crates/covrs)
+[![MIT licensed](https://img.shields.io/crates/l/covrs.svg)](https://github.com/scttnlsn/covrs/blob/main/LICENSE)
 
-Here's a [demo](https://github.com/scttnlsn/covrs/pull/3).
+Diff coverage, PR comments, and line annotations for your CI — just add this step to your workflow file:
 
-## Why
+```yaml
+# ...run your tests and generate a coverage file...
 
-Coverage tools produce reports in different formats (LCOV, Clover, Cobertura, JaCoCo, etc.) and each has its own tooling. **covrs** normalizes them all into one SQLite database so you can:
-
-- Ingest multiple reports — coverage is automatically unioned across all of them
-- Compute diff coverage against a git diff
-- Query coverage data with plain SQL if you need to
-
-## Install
-
-From [crates.io](https://crates.io/crates/covrs):
-
-```
-cargo install covrs
+- name: Coverage report
+  uses: scttnlsn/covrs@v0
+  with:
+    coverage-files: coverage.lcov  # coverage output from your tests
+    annotate: true
 ```
 
-From a local checkout:
+**[Demo](https://github.com/scttnlsn/covrs/pull/3)**
 
-```
-cargo install --path .
+Supports many common coverage formats, normalizes them into a single SQLite database, and unions coverage across multiple reports automatically. Much of what Codecov/Coveralls offers — no server required.
+
+## GitHub Action
+
+The action installs covrs, ingests your coverage files, and posts a diff-coverage comment on the pull request.
+
+> **Important:** Your job needs these permissions:
+>
+> ```yaml
+> permissions:
+>   pull-requests: write   # required for PR comments
+>   checks: write          # required for line annotations (annotate: true)
+> ```
+
+#### Inputs
+
+| Input            | Description                                      | Default     |
+|------------------|--------------------------------------------------|-------------|
+| `token`          | GitHub token for API access                      | `${{ github.token }}` |
+| `coverage-files` | Coverage file(s) to ingest (space or newline separated) | *required* |
+| `db`             | Path to the covrs SQLite database                | `.covrs.db` |
+| `root`           | Project root for making coverage paths relative  | current directory |
+| `path-prefix`    | Prefix to prepend to diff paths for matching     |             |
+| `annotate`       | Add line annotations to a check run for uncovered lines | `false` |
+| `version`        | covrs version to install (e.g. `0.1.0`)          | latest release |
+
+#### Full example
+
+```yaml
+name: CI
+on: pull_request
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      checks: write          # required for annotate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      # Run tests and generate coverage
+      - run: cargo llvm-cov test --lcov --output-path coverage.lcov
+
+      # Ingest, post comment, and annotate uncovered lines
+      - uses: scttnlsn/covrs@v0
+        with:
+          coverage-files: coverage.lcov
+          annotate: true
 ```
 
 ## Supported Formats
 
-| Format    | Extensions                  | Auto-detected |
-|-----------|------------------------------|---------------|
-| LCOV      | `.info`, `.lcov`             | ✓             |
-| Clover    | `.xml`                       | ✓             |
-| Cobertura | `.xml`                       | ✓             |
-| JaCoCo    | `.xml`                       | ✓             |
-| Istanbul  | `coverage-final.json`        | ✓             |
-| Go        | `.coverprofile`, `.gocov`    | ✓             |
+| Format    | Extensions                  | `--format` value | Auto-detected |
+|-----------|------------------------------|------------------|---------------|
+| LCOV      | `.info`, `.lcov`             | `lcov`           | yes           |
+| Clover    | `.xml`                       | `clover`         | yes           |
+| Cobertura | `.xml`                       | `cobertura`      | yes           |
+| JaCoCo    | `.xml`                       | `jacoco`         | yes           |
+| Istanbul  | `coverage-final.json`        | `istanbul`       | yes           |
+| Go        | `.coverprofile`, `.gocov`    | `gocover`        | yes           |
 
-Format detection works by checking file extensions first, then inspecting file content. You can always override with `--format`.
+Format detection works by checking file extensions first, then inspecting file content. You can always override with `--format <value>`.
 
-## Usage
+## CLI Usage
+
+covrs can also be used as a standalone CLI tool (see [Install](#install)). Run `covrs --help` or `covrs <subcommand> --help` to see all available flags and options.
 
 ### Ingest a coverage file
 
@@ -135,6 +184,8 @@ Diff coverage: 78.9% (30/38 lines covered)
 Full project coverage: 85.0%
 ```
 
+> **Note:** Diff coverage reports on line coverage only. Branch and function coverage are available via the `summary` and `files` commands.
+
 Use `--style markdown` to get the output as markdown (e.g. for piping
 into other tools):
 
@@ -181,62 +232,7 @@ finishes with a `neutral` conclusion so it never blocks merges.
 Annotations are submitted in batches of 50 (the GitHub API limit per
 request).
 
-## GitHub Action
-
-covrs is available as a reusable GitHub Action. It installs covrs,
-optionally ingests coverage files, and posts a diff-coverage comment on
-the pull request:
-
-```yaml
-- name: Coverage report
-  uses: scttnlsn/covrs@v0
-  with:
-    coverage-files: coverage.lcov
-    annotate: true
-```
-
-#### Inputs
-
-| Input            | Description                                      | Default     |
-|------------------|--------------------------------------------------|-------------|
-| `token`          | GitHub token for API access                      | `${{ github.token }}` |
-| `coverage-files` | Coverage file(s) to ingest (space or newline separated) | *required* |
-| `db`             | Path to the covrs SQLite database                | `.covrs.db` |
-| `root`           | Project root for making coverage paths relative  | current directory |
-| `path-prefix`    | Prefix to prepend to diff paths for matching     |             |
-| `annotate`       | Add line annotations to a check run for uncovered lines | `false` |
-| `version`        | covrs version to install (e.g. `0.1.0`)          | latest release |
-
-#### Full example
-
-```yaml
-name: CI
-on: pull_request
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      checks: write          # required for annotate
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools
-      - uses: taiki-e/install-action@cargo-llvm-cov
-
-      # Run tests and generate coverage
-      - run: cargo llvm-cov test --lcov --output-path coverage.lcov
-
-      # Ingest, post comment, and annotate uncovered lines
-      - uses: scttnlsn/covrs@v0
-        with:
-          coverage-files: coverage.lcov
-          annotate: true
-```
-
-## Global Options
+### Global options
 
 | Flag   | Description                        | Default    |
 |--------|------------------------------------|------------|
@@ -251,7 +247,7 @@ covrs --db /tmp/ci-coverage.db summary
 
 ## Database
 
-covrs uses SQLite with WAL mode for fast concurrent reads. The schema stores:
+covrs uses SQLite with WAL mode for fast concurrent reads. The schema (see [`schema.sql`](schema.sql)) stores:
 
 - **report** — metadata for each ingested report
 - **source_file** — deduplicated source file paths
@@ -274,4 +270,20 @@ sqlite3 .covrs.db "
   GROUP BY sf.path
   ORDER BY covered * 1.0 / total
 "
+```
+
+## Install
+
+Prebuilt binaries for Linux (x86_64, ARM64) and macOS (Intel, Apple Silicon) are published with each [GitHub release](https://github.com/scttnlsn/covrs/releases). Windows is not currently supported.
+
+From [crates.io](https://crates.io/crates/covrs):
+
+```
+cargo install covrs
+```
+
+From a local checkout:
+
+```
+cargo install --path .
 ```
