@@ -19,6 +19,8 @@ pub struct DiffCoverageReport {
     pub total_instrumentable: usize,
     /// Overall project line coverage rate (if available).
     pub total_rate: Option<f64>,
+    /// Per-file total line coverage rates (path → rate as 0.0–1.0).
+    pub file_rates: HashMap<String, f64>,
     /// Commit SHA to display.
     pub sha: Option<String>,
 }
@@ -138,14 +140,19 @@ impl ReportFormatter for MarkdownFormatter {
         if files_with_misses.is_empty() {
             md.push_str("\nAll diff lines are covered! 🎉\n");
         } else {
-            md.push_str("\n| File | Missed | Diff | \n");
-            md.push_str("|:-----|-------:|------:|\n");
+            md.push_str("\n| File | Missed | Diff | Total | \n");
+            md.push_str("|:-----|-------:|-----:|------:|\n");
 
             for f in &files_with_misses {
                 let file_rate = f.rate() * 100.0;
                 let path = &f.path;
                 let missed_count = f.missed_lines.len();
-                writeln!(md, "| `{path}` | {missed_count} | {file_rate:.0}% |").unwrap();
+                let total_rate = report.file_rates.get(path).copied().unwrap_or(0.0) * 100.0;
+                writeln!(
+                    md,
+                    "| `{path}` | {missed_count} | {file_rate:.0}% | {total_rate:.0}% |"
+                )
+                .unwrap();
             }
 
             md.push_str("\n<details>\n<summary>Missed lines</summary>\n\n");
@@ -199,6 +206,19 @@ pub fn build_report(
         }
     };
 
+    let mut file_rates = HashMap::new();
+    for f in &files {
+        match crate::db::get_file_line_rate(conn, &f.path) {
+            Ok(Some(r)) => {
+                file_rates.insert(f.path.clone(), r);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("Warning: could not compute coverage for {}: {e}", f.path);
+            }
+        }
+    }
+
     Ok(DiffCoverageReport {
         diff_files,
         diff_lines: diff_line_count,
@@ -206,6 +226,7 @@ pub fn build_report(
         total_covered,
         total_instrumentable,
         total_rate,
+        file_rates,
         sha: sha.map(|s| s.to_owned()),
     })
 }
@@ -453,6 +474,7 @@ mod tests {
             total_covered: 10,
             total_instrumentable: 10,
             total_rate: Some(0.85),
+            file_rates: HashMap::new(),
             sha: Some("abc1234def".to_string()),
         };
         let body = report.format(&MarkdownFormatter);
@@ -476,6 +498,7 @@ mod tests {
             total_covered: 3,
             total_instrumentable: 5,
             total_rate: None,
+            file_rates: HashMap::from([("src/foo.rs".to_string(), 0.75)]),
             sha: None,
         };
         let body = report.format(&MarkdownFormatter);
@@ -483,6 +506,8 @@ mod tests {
         assert!(body.contains("src/foo.rs"));
         assert!(body.contains("5-6"));
         assert!(body.contains("Missed lines"));
+        // Total file coverage column
+        assert!(body.contains("75%"));
     }
 
     #[test]
@@ -498,6 +523,7 @@ mod tests {
             total_covered: 3,
             total_instrumentable: 5,
             total_rate: None,
+            file_rates: HashMap::new(),
             sha: Some("abc1234def".to_string()),
         };
         let body = report.format(&MarkdownFormatter);
@@ -513,6 +539,7 @@ mod tests {
             total_covered: 5,
             total_instrumentable: 5,
             total_rate: None,
+            file_rates: HashMap::new(),
             sha: None,
         };
 
