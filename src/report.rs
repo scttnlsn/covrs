@@ -85,7 +85,8 @@ impl ReportFormatter for TextFormatter {
                 let file_covered = f.covered_lines.len();
                 let file_rate = f.rate() * 100.0;
                 let path = &f.path;
-                let missed = format_line_ranges(&f.missed_lines);
+                let all_instrumentable = f.all_instrumentable();
+                let missed = format_line_ranges(&f.missed_lines, &all_instrumentable);
                 writeln!(
                     out,
                     "  {path}  {file_covered}/{file_total} ({file_rate:.1}%)  missed: {missed}",
@@ -151,10 +152,11 @@ impl ReportFormatter for MarkdownFormatter {
 
             for f in &files_with_misses {
                 let path = &f.path;
+                let all_instrumentable = f.all_instrumentable();
                 let ranges = if let Some(ref sha) = report.sha {
-                    format_line_ranges_linked(&f.missed_lines, sha, path)
+                    format_line_ranges_linked(&f.missed_lines, &all_instrumentable, sha, path)
                 } else {
-                    format_line_ranges(&f.missed_lines)
+                    format_line_ranges(&f.missed_lines, &all_instrumentable)
                 };
                 writeln!(md, "**`{path}`**: {ranges}\n").unwrap();
             }
@@ -208,6 +210,51 @@ pub fn build_report(
     })
 }
 
+/// Maximum number of consecutive non-instrumentable lines that can be bridged
+/// when coalescing uncovered ranges. Gaps of up to this many lines (where none
+/// of the gap lines are instrumentable) are merged into a single range.
+const MAX_BRIDGE_GAP: u32 = 2;
+
+/// Coalesce sorted line numbers into `(start, end)` ranges, bridging small
+/// gaps where every line in the gap is non-instrumentable.
+///
+/// A gap between two uncovered lines is bridged only when:
+/// 1. Every line in the gap is absent from `all_instrumentable`, AND
+/// 2. The gap is at most [`MAX_BRIDGE_GAP`] lines wide.
+///
+/// Both `lines` and `all_instrumentable` must be sorted and deduplicated.
+#[must_use]
+pub fn coalesce_ranges(lines: &[u32], all_instrumentable: &[u32]) -> Vec<(u32, u32)> {
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    debug_assert!(
+        lines.windows(2).all(|w| w[0] < w[1]),
+        "coalesce_ranges requires sorted, deduplicated input"
+    );
+
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    let mut start = lines[0];
+    let mut end = lines[0];
+
+    for &line in &lines[1..] {
+        let gap = line - end - 1;
+        if gap <= MAX_BRIDGE_GAP
+            && (end + 1..line).all(|l| all_instrumentable.binary_search(&l).is_err())
+        {
+            end = line;
+        } else {
+            ranges.push((start, end));
+            start = line;
+            end = line;
+        }
+    }
+
+    ranges.push((start, end));
+    ranges
+}
+
 /// Format line numbers into compact range notation with markdown links.
 ///
 /// Each line number becomes a link like `[N](../blob/{sha}/{path}#LN)`.
@@ -215,15 +262,13 @@ pub fn build_report(
 ///
 /// The input slice must be sorted in ascending order.
 #[must_use]
-pub fn format_line_ranges_linked(lines: &[u32], sha: &str, path: &str) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-
-    debug_assert!(
-        lines.windows(2).all(|w| w[0] < w[1]),
-        "format_line_ranges_linked requires sorted, deduplicated input"
-    );
+pub fn format_line_ranges_linked(
+    lines: &[u32],
+    all_instrumentable: &[u32],
+    sha: &str,
+    path: &str,
+) -> String {
+    let ranges = coalesce_ranges(lines, all_instrumentable);
 
     let link = |start: u32, end: u32| -> String {
         if start == end {
@@ -233,99 +278,139 @@ pub fn format_line_ranges_linked(lines: &[u32], sha: &str, path: &str) -> String
         }
     };
 
-    let mut ranges: Vec<String> = Vec::new();
-    let mut start = lines[0];
-    let mut end = lines[0];
-
-    for &line in &lines[1..] {
-        if line == end + 1 {
-            end = line;
-        } else {
-            ranges.push(link(start, end));
-            start = line;
-            end = line;
-        }
-    }
-
-    ranges.push(link(start, end));
-
-    ranges.join(", ")
+    ranges
+        .iter()
+        .map(|&(start, end)| link(start, end))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Format line numbers into compact range notation, e.g. "1, 3-5, 8".
 ///
 /// The input slice must be sorted in ascending order.
 #[must_use]
-pub fn format_line_ranges(lines: &[u32]) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
+pub fn format_line_ranges(lines: &[u32], all_instrumentable: &[u32]) -> String {
+    let ranges = coalesce_ranges(lines, all_instrumentable);
 
-    debug_assert!(
-        lines.windows(2).all(|w| w[0] < w[1]),
-        "format_line_ranges requires sorted, deduplicated input"
-    );
-
-    let mut ranges: Vec<String> = Vec::new();
-    let mut start = lines[0];
-    let mut end = lines[0];
-
-    for &line in &lines[1..] {
-        if line == end + 1 {
-            end = line;
-        } else {
+    ranges
+        .iter()
+        .map(|&(start, end)| {
             if start == end {
-                ranges.push(start.to_string());
+                start.to_string()
             } else {
-                ranges.push(format!("{start}-{end}"));
+                format!("{start}-{end}")
             }
-            start = line;
-            end = line;
-        }
-    }
-
-    if start == end {
-        ranges.push(start.to_string());
-    } else {
-        ranges.push(format!("{start}-{end}"));
-    }
-
-    ranges.join(", ")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // -- coalesce_ranges tests -----------------------------------------------
+
+    #[test]
+    fn test_coalesce_ranges_empty() {
+        assert_eq!(coalesce_ranges(&[], &[]), Vec::<(u32, u32)>::new());
+    }
+
+    #[test]
+    fn test_coalesce_ranges_single() {
+        assert_eq!(coalesce_ranges(&[5], &[5]), vec![(5, 5)]);
+    }
+
+    #[test]
+    fn test_coalesce_ranges_consecutive() {
+        assert_eq!(coalesce_ranges(&[1, 2, 3], &[1, 2, 3]), vec![(1, 3)]);
+    }
+
+    #[test]
+    fn test_coalesce_ranges_bridges_one_non_instrumentable() {
+        // Lines 1,2,4,5 uncovered; line 3 not instrumentable → bridge
+        assert_eq!(coalesce_ranges(&[1, 2, 4, 5], &[1, 2, 4, 5]), vec![(1, 5)]);
+    }
+
+    #[test]
+    fn test_coalesce_ranges_bridges_two_non_instrumentable() {
+        // Lines 1,2,5,6 uncovered; lines 3,4 not instrumentable → bridge
+        assert_eq!(coalesce_ranges(&[1, 2, 5, 6], &[1, 2, 5, 6]), vec![(1, 6)]);
+    }
+
+    #[test]
+    fn test_coalesce_ranges_no_bridge_three_non_instrumentable() {
+        // Lines 1,2,6,7 uncovered; lines 3,4,5 not instrumentable → too wide, no bridge
+        assert_eq!(
+            coalesce_ranges(&[1, 2, 6, 7], &[1, 2, 6, 7]),
+            vec![(1, 2), (6, 7)]
+        );
+    }
+
+    #[test]
+    fn test_coalesce_ranges_no_bridge_covered_in_gap() {
+        // Lines 1,2,4,5 uncovered; line 3 is instrumentable (covered) → no bridge
+        assert_eq!(
+            coalesce_ranges(&[1, 2, 4, 5], &[1, 2, 3, 4, 5]),
+            vec![(1, 2), (4, 5)]
+        );
+    }
+
+    #[test]
+    fn test_coalesce_ranges_mixed() {
+        // Lines 1,2,4,5,10 uncovered; all are instrumentable, line 3 is not
+        assert_eq!(
+            coalesce_ranges(&[1, 2, 4, 5, 10], &[1, 2, 4, 5, 10]),
+            vec![(1, 5), (10, 10)]
+        );
+    }
+
+    // -- format_line_ranges tests -------------------------------------------
+
     #[test]
     fn test_format_line_ranges_empty() {
-        assert_eq!(format_line_ranges(&[]), "");
+        assert_eq!(format_line_ranges(&[], &[]), "");
     }
 
     #[test]
     fn test_format_line_ranges_single() {
-        assert_eq!(format_line_ranges(&[5]), "5");
+        assert_eq!(format_line_ranges(&[5], &[5]), "5");
     }
 
     #[test]
     fn test_format_line_ranges_consecutive() {
-        assert_eq!(format_line_ranges(&[1, 2, 3]), "1-3");
+        assert_eq!(format_line_ranges(&[1, 2, 3], &[1, 2, 3]), "1-3");
     }
 
     #[test]
     fn test_format_line_ranges_mixed() {
-        assert_eq!(format_line_ranges(&[1, 3, 4, 5, 10]), "1, 3-5, 10");
+        // All lines instrumentable → no bridging across gaps
+        assert_eq!(
+            format_line_ranges(&[1, 3, 4, 5, 10], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+            "1, 3-5, 10"
+        );
     }
 
     #[test]
+    fn test_format_line_ranges_bridges_gap() {
+        // Lines 1,2,4,5 uncovered; line 3 not instrumentable → "1-5"
+        assert_eq!(format_line_ranges(&[1, 2, 4, 5], &[1, 2, 4, 5]), "1-5");
+    }
+
+    // -- format_line_ranges_linked tests ------------------------------------
+
+    #[test]
     fn test_format_line_ranges_linked_empty() {
-        assert_eq!(format_line_ranges_linked(&[], "abc123", "src/foo.rs"), "");
+        assert_eq!(
+            format_line_ranges_linked(&[], &[], "abc123", "src/foo.rs"),
+            ""
+        );
     }
 
     #[test]
     fn test_format_line_ranges_linked_single() {
         assert_eq!(
-            format_line_ranges_linked(&[5], "abc123", "src/foo.rs"),
+            format_line_ranges_linked(&[5], &[5], "abc123", "src/foo.rs"),
             "[5](../blob/abc123/src/foo.rs#L5)"
         );
     }
@@ -333,7 +418,7 @@ mod tests {
     #[test]
     fn test_format_line_ranges_linked_consecutive() {
         assert_eq!(
-            format_line_ranges_linked(&[1, 2, 3], "abc123", "src/foo.rs"),
+            format_line_ranges_linked(&[1, 2, 3], &[1, 2, 3], "abc123", "src/foo.rs"),
             "[1-3](../blob/abc123/src/foo.rs#L1-L3)"
         );
     }
@@ -341,8 +426,21 @@ mod tests {
     #[test]
     fn test_format_line_ranges_linked_mixed() {
         assert_eq!(
-            format_line_ranges_linked(&[1, 3, 4, 5, 10], "abc123", "src/foo.rs"),
+            format_line_ranges_linked(
+                &[1, 3, 4, 5, 10],
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                "abc123",
+                "src/foo.rs"
+            ),
             "[1](../blob/abc123/src/foo.rs#L1), [3-5](../blob/abc123/src/foo.rs#L3-L5), [10](../blob/abc123/src/foo.rs#L10)"
+        );
+    }
+
+    #[test]
+    fn test_format_line_ranges_linked_bridges_gap() {
+        assert_eq!(
+            format_line_ranges_linked(&[1, 2, 4, 5], &[1, 2, 4, 5], "abc123", "src/foo.rs"),
+            "[1-5](../blob/abc123/src/foo.rs#L1-L5)"
         );
     }
 

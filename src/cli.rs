@@ -154,7 +154,8 @@ pub fn cmd_lines(conn: &Connection, source_file: &str, uncovered: bool) -> Resul
         let mut out = String::new();
         writeln!(out, "Uncovered lines in '{source_file}':").unwrap();
         let uncovered_numbers: Vec<u32> = uncovered_lines.iter().map(|l| l.line_number).collect();
-        let ranges = report::format_line_ranges(&uncovered_numbers);
+        let all_instrumentable: Vec<u32> = lines.iter().map(|l| l.line_number).collect();
+        let ranges = report::format_line_ranges(&uncovered_numbers, &all_instrumentable);
         writeln!(out, "  {ranges}").unwrap();
         let count = uncovered_lines.len();
         writeln!(out, "  ({count} lines)").unwrap();
@@ -224,31 +225,17 @@ pub fn build_annotations(report: &report::DiffCoverageReport) -> Vec<Annotation>
             continue;
         }
 
-        // Group consecutive missed lines into ranges
-        let mut start = file.missed_lines[0];
-        let mut end = file.missed_lines[0];
+        let all_instrumentable = file.all_instrumentable();
+        let ranges = report::coalesce_ranges(&file.missed_lines, &all_instrumentable);
 
-        for &line in &file.missed_lines[1..] {
-            if line == end + 1 {
-                end = line;
-            } else {
-                annotations.push(Annotation {
-                    path: file.path.clone(),
-                    start_line: start,
-                    end_line: end,
-                    message: annotation_message(start, end),
-                });
-                start = line;
-                end = line;
-            }
+        for (start, end) in ranges {
+            annotations.push(Annotation {
+                path: file.path.clone(),
+                start_line: start,
+                end_line: end,
+                message: annotation_message(start, end),
+            });
         }
-
-        annotations.push(Annotation {
-            path: file.path.clone(),
-            start_line: start,
-            end_line: end,
-            message: annotation_message(start, end),
-        });
     }
 
     annotations
