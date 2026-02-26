@@ -177,7 +177,8 @@ fn parse_streaming(
                                 if line_type.as_deref() == Some("cond") {
                                     let tc = truecount.unwrap_or(0);
                                     let fc = falsecount.unwrap_or(0);
-                                    let num_conditions = tc.max(fc);
+                                    let num_conditions =
+                                        tc.max(fc).min(super::MAX_BRANCHES_PER_LINE);
                                     let idx = branch_indices.entry(line_number).or_insert(0);
 
                                     for i in 0..num_conditions {

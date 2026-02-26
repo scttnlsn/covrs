@@ -86,6 +86,11 @@ fn looks_like_go_block(line: &str) -> bool {
     after.contains(',') && after.split_whitespace().count() >= 2
 }
 
+/// Maximum number of lines a single block can span. Anything larger is
+/// almost certainly malformed input and expanding it would consume
+/// excessive memory.
+const MAX_BLOCK_LINE_SPAN: u32 = 100_000;
+
 /// Parse a single block line, returning (file_path, Block).
 ///
 /// Format: `<file>:<startLine>.<startCol>,<endLine>.<endCol> <numStmt> <count>`
@@ -103,6 +108,12 @@ fn parse_block_line(line: &str) -> Option<(&str, Block)> {
 
     let start_line: u32 = start.split_once('.')?.0.parse().ok()?;
     let end_line: u32 = end.split_once('.')?.0.parse().ok()?;
+
+    // Reject blocks with an invalid range or an absurdly large span that
+    // would cause excessive memory allocation when expanded to per-line data.
+    if end_line < start_line || (end_line - start_line) > MAX_BLOCK_LINE_SPAN {
+        return None;
+    }
 
     let mut parts = tail.split_whitespace();
     let _num_stmt = parts.next()?;

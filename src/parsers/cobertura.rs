@@ -195,7 +195,10 @@ fn parse_streaming(
                                     if let Some(cond) = cond_cov.as_deref() {
                                         if let Some(caps) = branch_re.captures(cond) {
                                             let covered: u32 = caps[1].parse().unwrap_or(0);
-                                            let total: u32 = caps[2].parse().unwrap_or(0);
+                                            let total: u32 = caps[2]
+                                                .parse()
+                                                .unwrap_or(0)
+                                                .min(super::MAX_BRANCHES_PER_LINE);
 
                                             for i in 0..total {
                                                 // Cobertura's condition-coverage only tells

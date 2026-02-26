@@ -14,6 +14,12 @@ use quick_xml::reader::Reader;
 
 use crate::model::FileCoverage;
 
+/// Maximum number of branch arms to emit for a single source line. Any
+/// parsed branch count above this is almost certainly malformed input and
+/// expanding it would consume excessive memory. Even 1024 is far beyond
+/// any real-world branch count per line.
+pub(crate) const MAX_BRANCHES_PER_LINE: u32 = 1024;
+
 /// Parser for a specific coverage format.
 pub trait CoverageParser {
     /// The format this parser handles.

@@ -4,7 +4,8 @@
 [![crates.io](https://img.shields.io/crates/v/covrs.svg)](https://crates.io/crates/covrs)
 [![MIT licensed](https://img.shields.io/crates/l/covrs.svg)](https://github.com/scttnlsn/covrs/blob/main/LICENSE)
 
-Diff coverage, PR comments, and line annotations for your CI — just add this step to your workflow file:
+Code coverage ingestion and reporting.
+Diff coverage, PR comments, and line annotations for your CI — add this step to your GitHub actions workflow:
 
 ```yaml
 # ...run your tests and generate a coverage file...

@@ -218,7 +218,8 @@ fn parse_streaming(
                                 }
 
                                 // Branch coverage
-                                let total_branches = cb + mb;
+                                let total_branches =
+                                    cb.saturating_add(mb).min(super::MAX_BRANCHES_PER_LINE);
                                 if total_branches > 0 {
                                     let idx = branch_indices.entry(line_number).or_insert(0);
                                     for i in 0..total_branches {
