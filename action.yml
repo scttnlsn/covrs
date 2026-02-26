@@ -1,5 +1,5 @@
-name: "covrs diff coverage"
-description: "Post a diff-coverage comment on a GitHub pull request using covrs"
+name: "covrs"
+description: "Diff coverage reports, PR comments, and line annotations for your CI"
 branding:
   icon: "check-circle"
   color: "green"
