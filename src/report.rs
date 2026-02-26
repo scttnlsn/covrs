@@ -114,6 +114,24 @@ impl ReportFormatter for MarkdownFormatter {
     fn format(&self, report: &DiffCoverageReport) -> String {
         let mut md = String::new();
 
+        if report.diff_files == 0 {
+            md.push_str("No added lines found in diff.\n");
+            md.push_str("\n<sub>[covrs](https://github.com/scttnlsn/covrs)</sub>\n");
+            return md;
+        }
+
+        if report.total_instrumentable == 0 {
+            let lines = report.diff_lines;
+            let files = report.diff_files;
+            writeln!(
+                md,
+                "{lines} lines added across {files} files — none are instrumentable."
+            )
+            .unwrap();
+            md.push_str("\n<sub>[covrs](https://github.com/scttnlsn/covrs)</sub>\n");
+            return md;
+        }
+
         let diff_rate = rate(
             report.total_covered as u64,
             report.total_instrumentable as u64,
@@ -528,6 +546,46 @@ mod tests {
         };
         let body = report.format(&MarkdownFormatter);
         assert!(body.contains("[5-6](../blob/abc1234def/src/foo.rs#L5-L6)"));
+    }
+
+    #[test]
+    fn test_format_markdown_no_diff_files() {
+        let report = DiffCoverageReport {
+            diff_files: 0,
+            diff_lines: 0,
+            files: vec![],
+            total_covered: 0,
+            total_instrumentable: 0,
+            total_rate: None,
+            file_rates: HashMap::new(),
+            sha: None,
+        };
+        let body = report.format(&MarkdownFormatter);
+        assert!(body.contains("No added lines found in diff."));
+        assert!(!body.contains("Diff Coverage:"));
+        assert!(!body.contains("All diff lines are covered!"));
+        assert!(body.contains("[covrs]"));
+    }
+
+    #[test]
+    fn test_format_markdown_no_instrumentable_lines() {
+        let report = DiffCoverageReport {
+            diff_files: 2,
+            diff_lines: 15,
+            files: vec![],
+            total_covered: 0,
+            total_instrumentable: 0,
+            total_rate: None,
+            file_rates: HashMap::new(),
+            sha: None,
+        };
+        let body = report.format(&MarkdownFormatter);
+        assert!(body.contains("15 lines added across 2 files"));
+        assert!(body.contains("none are instrumentable"));
+        assert!(!body.contains("Diff Coverage:"));
+        assert!(!body.contains("All diff lines are covered!"));
+        assert!(!body.contains("0.0%"));
+        assert!(body.contains("[covrs]"));
     }
 
     #[test]
