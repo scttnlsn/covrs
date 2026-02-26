@@ -1,4 +1,4 @@
-name: "covrs"
+name: "covrs - Code coverage reporting"
 description: "Diff coverage reports, PR comments, and line annotations for your CI"
 branding:
   icon: "check-circle"
