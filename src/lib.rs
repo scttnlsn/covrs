@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod db;
 pub mod diff;
+pub mod example;
 pub mod github;
 pub mod ingest;
 pub mod model;
