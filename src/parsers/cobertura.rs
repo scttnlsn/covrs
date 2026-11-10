@@ -99,14 +99,12 @@ fn parse_streaming(
             Ok(Event::Eof) => break,
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 match e.name().as_ref() {
-                    b"source" => {
-                        // Only set in_source for Start events; self-closing
-                        // <source/> (Empty) has no text content and no
-                        // corresponding End event, so setting the flag would
-                        // cause the next unrelated Text event to be captured.
-                        if is_start_event {
-                            in_source = true;
-                        }
+                    // Only set in_source for Start events; self-closing
+                    // <source/> (Empty) has no text content and no
+                    // corresponding End event, so setting the flag would
+                    // cause the next unrelated Text event to be captured.
+                    b"source" if is_start_event => {
+                        in_source = true;
                     }
                     b"class" => {
                         if let Some(filename) = get_attr(e, b"filename") {
@@ -225,13 +223,11 @@ fn parse_streaming(
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_source {
-                    if let Ok(text) = e.unescape() {
-                        sources.push(text.to_string());
-                    }
-                    in_source = false;
+            Ok(Event::Text(ref e)) if in_source => {
+                if let Ok(text) = e.unescape() {
+                    sources.push(text.to_string());
                 }
+                in_source = false;
             }
             Ok(Event::End(ref e)) => match e.name().as_ref() {
                 b"source" => {
@@ -243,21 +239,19 @@ fn parse_streaming(
                         emit(file)?;
                     }
                 }
-                b"method" => {
-                    if in_method {
-                        if let (Some(file), Some(name)) =
-                            (current_file.as_mut(), current_method_name.take())
-                        {
-                            file.functions.push(FunctionCoverage {
-                                name,
-                                start_line: method_start_line,
-                                end_line: None,
-                                hit_count: if method_hit { 1 } else { 0 },
-                            });
-                        }
-                        in_method = false;
-                        method_start_line = None;
+                b"method" if in_method => {
+                    if let (Some(file), Some(name)) =
+                        (current_file.as_mut(), current_method_name.take())
+                    {
+                        file.functions.push(FunctionCoverage {
+                            name,
+                            start_line: method_start_line,
+                            end_line: None,
+                            hit_count: if method_hit { 1 } else { 0 },
+                        });
                     }
+                    in_method = false;
+                    method_start_line = None;
                 }
                 _ => {}
             },

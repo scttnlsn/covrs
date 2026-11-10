@@ -245,28 +245,26 @@ fn parse_streaming(
                 b"class" => {
                     current_class_source = None;
                 }
-                b"method" => {
-                    if in_method {
-                        if let (Some(pkg), Some(src), Some(name)) = (
-                            &current_package,
-                            &current_class_source,
-                            current_method_name.take(),
-                        ) {
-                            let key = (pkg.clone(), src.clone());
-                            class_methods
-                                .entry(key)
-                                .or_default()
-                                .push(FunctionCoverage {
-                                    name,
-                                    start_line: current_method_line,
-                                    end_line: None,
-                                    hit_count: if method_hit { 1 } else { 0 },
-                                });
-                        }
-                        in_method = false;
-                        current_method_name = None;
-                        current_method_line = None;
+                b"method" if in_method => {
+                    if let (Some(pkg), Some(src), Some(name)) = (
+                        &current_package,
+                        &current_class_source,
+                        current_method_name.take(),
+                    ) {
+                        let key = (pkg.clone(), src.clone());
+                        class_methods
+                            .entry(key)
+                            .or_default()
+                            .push(FunctionCoverage {
+                                name,
+                                start_line: current_method_line,
+                                end_line: None,
+                                hit_count: if method_hit { 1 } else { 0 },
+                            });
                     }
+                    in_method = false;
+                    current_method_name = None;
+                    current_method_line = None;
                 }
                 b"sourcefile" => {
                     if let Some(mut file) = current_sourcefile.take() {

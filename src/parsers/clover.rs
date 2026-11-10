@@ -207,12 +207,10 @@ fn parse_streaming(
                     _ => {}
                 }
             }
-            Ok(Event::End(ref e)) => {
-                if e.name().as_ref() == b"file" {
-                    if let Some(mut file) = current_file.take() {
-                        file.lines.sort_by_key(|l| l.line_number);
-                        emit(file)?;
-                    }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"file" => {
+                if let Some(mut file) = current_file.take() {
+                    file.lines.sort_by_key(|l| l.line_number);
+                    emit(file)?;
                 }
             }
             _ => {}
